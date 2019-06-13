@@ -21,8 +21,12 @@ PVOID static NoirGetInputBuffer(IN PIRP Irp)
 	PIO_STACK_LOCATION irpsp=IoGetCurrentIrpStackLocation(Irp);
 	if(irpsp->MajorFunction==IRP_MJ_DEVICE_CONTROL || irpsp->MajorFunction==IRP_MJ_INTERNAL_DEVICE_CONTROL)
 	{
-		ULONG IoCode=irpsp->Parameters.DeviceIoControl.IoControlCode;
-		if(IoCode & METHOD_BUFFERED || IoCode & METHOD_IN_DIRECT || IoCode & METHOD_OUT_DIRECT)
+		ULONG Method=METHOD_FROM_CTL_CODE(irpsp->Parameters.DeviceIoControl.IoControlCode);
+		if(Method==METHOD_BUFFERED)
+			return Irp->AssociatedIrp.SystemBuffer;
+		else if(Method==METHOD_IN_DIRECT)
+			return Irp->AssociatedIrp.SystemBuffer;
+		else if(Method==METHOD_OUT_DIRECT)
 			return Irp->AssociatedIrp.SystemBuffer;
 		else
 			return irpsp->Parameters.DeviceIoControl.Type3InputBuffer;
@@ -35,12 +39,12 @@ PVOID static NoirGetOutputBuffer(IN PIRP Irp)
 	PIO_STACK_LOCATION irpsp=IoGetCurrentIrpStackLocation(Irp);
 	if(irpsp->MajorFunction==IRP_MJ_DEVICE_CONTROL || irpsp->MajorFunction==IRP_MJ_INTERNAL_DEVICE_CONTROL)
 	{
-		ULONG IoCode=irpsp->Parameters.DeviceIoControl.IoControlCode;
-		if(IoCode & METHOD_BUFFERED)
-			return Irp->AssociatedIrp.SystemBuffer;
-		if(IoCode & METHOD_OUT_DIRECT)
+		ULONG Method=METHOD_FROM_CTL_CODE(irpsp->Parameters.DeviceIoControl.IoControlCode);
+		if(Method==METHOD_BUFFERED)
+			return Irp->UserBuffer;
+		else if(Method==METHOD_OUT_DIRECT)
 			return MmGetSystemAddressForMdlSafe(Irp->MdlAddress,HighPagePriority);
-		if(IoCode & METHOD_NEITHER)
+		else if(Method==METHOD_NEITHER)
 			return Irp->UserBuffer;
 	}
 	return NULL;
@@ -49,6 +53,9 @@ PVOID static NoirGetOutputBuffer(IN PIRP Irp)
 void NoirDriverUnload(IN PDRIVER_OBJECT DriverObject)
 {
 	UNICODE_STRING uniLinkName=RTL_CONSTANT_STRING(LINK_NAME);
+	NoirTeardownHookedPages();
+	NoirTeardownProtectedFile();
+	LDE_Finalize();
 	IoDeleteSymbolicLink(&uniLinkName);
 	IoDeleteDevice(DriverObject->DeviceObject);
 }
@@ -74,12 +81,58 @@ NTSTATUS NoirDispatchIoControl(IN PDEVICE_OBJECT DeviceObject,IN PIRP Irp)
 	{
 		case IOCTL_Subvert:
 		{
+			NoirSetProtectedPID((ULONG)PsGetCurrentProcessId());
 			NoirBuildHypervisor();
 			break;
 		}
 		case IOCTL_Restore:
 		{
 			NoirTeardownHypervisor();
+			break;
+		}
+		case IOCTL_SetPID:
+		{
+			NoirSetProtectedPID(*(PULONG)InputBuffer);
+			break;
+		}
+		case IOCTL_SetVs:
+		{
+			RtlCopyMemory(virtual_vstr,InputBuffer,12);
+			break;
+		}
+		case IOCTL_SetNs:
+		{
+			RtlCopyMemory(virtual_nstr,InputBuffer,48);
+			break;
+		}
+		case IOCTL_SetName:
+		{
+			NoirSetProtectedFile((PWSTR)InputBuffer);
+			break;
+		}
+		case IOCTL_NvVer:
+		{
+			*(PULONG)OutputBuffer=NoirVisorVersion();
+			break;
+		}
+		case IOCTL_CpuVs:
+		{
+			NoirGetVendorString(OutputBuffer);
+			break;
+		}
+		case IOCTL_CpuPn:
+		{
+			NoirGetProcessorName(OutputBuffer);
+			break;
+		}
+		case IOCTL_OsVer:
+		{
+			NoirGetSystemVersion(OutputBuffer,OutputSize);
+			break;
+		}
+		case IOCTL_VirtCap:
+		{
+			*(PULONG)OutputBuffer=NoirQueryVirtualizationSupportability();
 			break;
 		}
 		default:
@@ -96,6 +149,17 @@ NTSTATUS NoirDispatchIoControl(IN PDEVICE_OBJECT DeviceObject,IN PIRP Irp)
 	return st;
 }
 
+void static NoirDriverReinitialize(IN PDRIVER_OBJECT DriverObject,IN PVOID Context OPTIONAL,IN ULONG Count)
+{
+	system_cr3=__readcr3();
+	orig_system_call=__readmsr(0xC0000082);
+	LDE_Initialize();
+	NoirGetNtOpenProcessIndex();
+	NoirSaveImageInfo(DriverObject);
+	NoirBuildHookedPages();
+	NoirBuildProtectedFile();
+}
+
 NTSTATUS NoirDriverEntry(IN PDRIVER_OBJECT DriverObject,IN PUNICODE_STRING RegistryPath)
 {
 	NTSTATUS st=STATUS_UNSUCCESSFUL;
@@ -107,6 +171,7 @@ NTSTATUS NoirDriverEntry(IN PDRIVER_OBJECT DriverObject,IN PUNICODE_STRING Regis
 	DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL]=NoirDispatchIoControl;
 	DriverObject->DriverUnload=NoirDriverUnload;
 	//Create Device and corresponding Symbolic Name
+	IoRegisterDriverReinitialization(DriverObject,NoirDriverReinitialize,NULL);
 	st=IoCreateDevice(DriverObject,0,&uniDevName,FILE_DEVICE_UNKNOWN,FILE_DEVICE_SECURE_OPEN,FALSE,&DeviceObject);
 	if(NT_SUCCESS(st))
 	{

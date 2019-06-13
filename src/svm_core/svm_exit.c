@@ -45,16 +45,50 @@ void static fastcall nvc_svm_cpuid_handler(noir_gpr_state_p gpr_state,noir_svm_v
 {
 	u32 ia=(u32)gpr_state->rax;
 	u32 ic=(u32)gpr_state->rcx;
-	u32 a,b,c,d;
-	noir_cpuid(ia,ic,&a,&b,&c,&d);
-	//Now we don't support nested virtualization.
-	//Thus, mark the processor not supporting AMD-V.
-	if(ia==0x80000001)c&=~amd64_cpuid_svm_bit;
-	if(ia==0x8000000A)a=b=d=0;
-	*(u32*)&gpr_state->rax=a;
-	*(u32*)&gpr_state->rbx=b;
-	*(u32*)&gpr_state->rcx=c;
-	*(u32*)&gpr_state->rdx=d;
+	// Here, we implement the cpuid cache to improve performance on nested VM scenario.
+	// First, check the leaf function.
+	if(noir_bt(&ia,31))
+	{
+		// At this moment, the CPUID goes to a extended leaf.
+		// Check whether info is cached or not.
+		if(noir_bt(&vcpu->relative_hvm->cpuid_ext_submask,ia))
+		{
+			// Value of ECX other than zero is not cached.
+			if(ic)
+				noir_cpuid(ia,ic,(u32*)&gpr_state->rax,(u32*)&gpr_state->rbx,(u32*)&gpr_state->rcx,(u32*)&gpr_state->rdx);
+			else
+				goto ext_cached;
+		}
+		else
+		{
+ext_cached:
+			*(u32*)gpr_state->rax=vcpu->cpuid_cache.ext_leaf[ia-0x80000000].eax;
+			*(u32*)gpr_state->rbx=vcpu->cpuid_cache.ext_leaf[ia-0x80000000].ebx;
+			*(u32*)gpr_state->rcx=vcpu->cpuid_cache.ext_leaf[ia-0x80000000].ecx;
+			*(u32*)gpr_state->rdx=vcpu->cpuid_cache.ext_leaf[ia-0x80000000].edx;
+		}
+	}
+	else
+	{
+		// At this moment, the CPUID goes to a standard leaf.
+		// Check whether info is cached or not.
+		if(noir_bt(&vcpu->relative_hvm->cpuid_std_submask,ia))
+		{
+			// Value of ECX other than zero is not cached.
+			if(ic)
+				noir_cpuid(ia,ic,(u32*)&gpr_state->rax,(u32*)&gpr_state->rbx,(u32*)&gpr_state->rcx,(u32*)&gpr_state->rdx);
+			else
+				goto std_cached;
+		}
+		else
+		{
+std_cached:
+			*(u32*)gpr_state->rax=vcpu->cpuid_cache.std_leaf[ia].eax;
+			*(u32*)gpr_state->rbx=vcpu->cpuid_cache.std_leaf[ia].ebx;
+			*(u32*)gpr_state->rcx=vcpu->cpuid_cache.std_leaf[ia].ecx;
+			*(u32*)gpr_state->rdx=vcpu->cpuid_cache.std_leaf[ia].edx;
+		}
+	}
 }
 
 //Expected Intercept Code: 0x7C
@@ -150,18 +184,20 @@ void static fastcall nvc_svm_vmmcall_handler(noir_gpr_state_p gpr_state,noir_svm
 		case noir_svm_callexit:
 		{
 			//Validate the caller to prevent malicious unloading request.
-			if(gip>=hvm->hv_image.base && gip<hvm->hv_image.base+hvm->hv_image.size)
+			if(gip>=hvm_p->hv_image.base && gip<hvm_p->hv_image.base+hvm_p->hv_image.size)
 			{
-				//Save the address to return.
-				gpr_state->rax=noir_svm_vmread(vcpu->vmcb.virt,next_rip);
-				//Save the GPR state.
-				gsp-=sizeof(noir_gpr_state)+sizeof(void*);
-				memcpy((void*)gsp,gpr_state,sizeof(noir_gpr_state));
-				*(ulong_ptr*)(gsp+sizeof(noir_gpr_state))=noir_svm_vmread(vcpu->vmcb.virt,guest_rflags);
+				// Directly use space from the starting stack position.
+				// Normally it is unused.
+				noir_gpr_state_p saved_state=(noir_gpr_state_p)vcpu->hv_stack;
+				// Copy state.
+				noir_stosp(saved_state,gpr_state,sizeof(void*)*2);
+				saved_state->rax=noir_svm_vmread(vcpu->vmcb.virt,next_rip);
+				saved_state->rcx=noir_svm_vmread(vcpu->vmcb.virt,guest_rflags);
+				saved_state->rdx=gsp;
 				//Mark the processor is in transition mode.
 				vcpu->status=noir_virt_trans;
 				//Return to the caller at Host Mode.
-				nvc_svm_return(gsp);
+				nvc_svm_return(saved_state);
 			}
 			//If execution goes here, then the invoker is malicious.
 			nv_dprintf("Malicious call of exit!\n");
@@ -178,13 +214,14 @@ void static fastcall nvc_svm_vmmcall_handler(noir_gpr_state_p gpr_state,noir_svm
 //Expected Intercept Code: -1
 void static fastcall nvc_svm_invalid_guest_state(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
-	;
+	nv_dprintf("[Processor %d] Guest State is Invalid! VMCB: 0x%p\n",vcpu->proc_id,vcpu->vmcb.virt);
+	//Dump State in VMCB and Print them to Debugger.
 }
 
 void nvc_svm_exit_handler(noir_gpr_state_p gpr_state,u32 processor_id)
 {
 	//Get Virtual CPU and the linear address of VMCB.
-	noir_svm_vcpu_p vcpu=&hvm->virtual_cpu[processor_id];
+	noir_svm_vcpu_p vcpu=&hvm_p->virtual_cpu[processor_id];
 	void* vmcb_va=vcpu->vmcb.virt;
 	//Read the Intercept Code.
 	i32 intercept_code=noir_svm_vmread32(vmcb_va,exit_code);
@@ -196,7 +233,7 @@ void nvc_svm_exit_handler(noir_gpr_state_p gpr_state,u32 processor_id)
 	//Check if the interception is due to invalid guest state.
 	//Invoke the handler accordingly.
 	if(intercept_code==-1)
-		nvc_svm_default_handler(gpr_state,vcpu);
+		nvc_svm_invalid_guest_state(gpr_state,vcpu);
 	else
 		svm_exit_handlers[code_group][code_num](gpr_state,vcpu);
 	//Since rax register is operated, save to VMCB.

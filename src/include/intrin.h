@@ -77,9 +77,34 @@
 #define noir_stosp		__stosd
 #endif
 
-//Cleat/Set RFlags.IF
+//Move-String instructions.
+#define noir_movsb		__movsb
+#define noir_movsw		__movsw
+#define noir_movsd		__movsd
+#if defined(_amd64)
+#define noir_movsq		__movsq
+#define noir_movsp		__movsq
+#else
+#define noir_movsp		__movsd
+#endif
+
+//Clear/Set RFlags.IF
 #define noir_cli	_disable
 #define noir_sti	_enable
+
+//Debug-Break
+#define noir_int3	__debugbreak
+
+//Invalidate Processor Cache
+#define noir_wbinvd		__wbinvd
+
+//SSE4.2 CRC32
+#define noir_crc32_u8	_mm_crc32_u8
+#define noir_crc32_u16	_mm_crc32_u16
+#define noir_crc32_u32	_mm_crc32_u32
+#if defined(_amd64)
+#define noir_crc32_u64	(u32)_mm_crc32_u64
+#endif
 #endif
 
 //The rest are done by inline functions.

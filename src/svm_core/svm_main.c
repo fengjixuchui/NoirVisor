@@ -13,8 +13,8 @@
 */
 
 #include <nvdef.h>
-#include <noirhvm.h>
 #include <nvbdk.h>
+#include <noirhvm.h>
 #include <nvstatus.h>
 #include <svm_intrin.h>
 #include <intrin.h>
@@ -91,6 +91,17 @@ void static nvc_svm_setup_msr_hook(noir_hypervisor_p hvm_p)
 #endif
 }
 
+void static nvc_svm_setup_cpuid_cache(noir_svm_vcpu_p vcpu)
+{
+	noir_svm_cpuid_info_p std_cache=vcpu->cpuid_cache.std_leaf;
+	noir_svm_cpuid_info_p ext_cache=vcpu->cpuid_cache.ext_leaf;
+	u32 i;
+	for(i=1;i<=vcpu->relative_hvm->std_leaftotal;std_cache=&vcpu->cpuid_cache.std_leaf[++i])
+		noir_cpuid(i,0,&std_cache->eax,&std_cache->ebx,&std_cache->ecx,&std_cache->edx);
+	for(i=0x80000001;i<=vcpu->relative_hvm->ext_leaftotal+0x80000000;ext_cache=&vcpu->cpuid_cache.ext_leaf[(++i)-0x80000000])
+		noir_cpuid(i,0,&ext_cache->eax,&ext_cache->ebx,&ext_cache->ecx,&ext_cache->edx);
+}
+
 ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_ptr gip)
 {
 	//Save Processor State
@@ -98,8 +109,10 @@ ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_p
 	nvc_svm_instruction_intercept1 list1;
 	nvc_svm_instruction_intercept2 list2;
 	nvc_svm_enable();
+	nvc_svm_setup_cpuid_cache(vcpu);
 	noir_save_processor_state(&state);
 	//Setup State-Save Area
+	noir_int3();
 	//Save Segment State - CS
 	noir_svm_vmwrite16(vcpu->vmcb.virt,guest_cs_selector,state.cs.selector);
 	noir_svm_vmwrite16(vcpu->vmcb.virt,guest_cs_attrib,svm_attrib(state.cs.attrib));
@@ -150,6 +163,10 @@ ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_p
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_cr2,state.cr2);
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_cr3,state.cr3);
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_cr4,state.cr4);
+#if defined(_amd64)
+	//Save Task Priority Register (CR8)
+	noir_svm_vmwrite8(vcpu->vmcb.virt,avid_control,(u8)state.cr8);
+#endif
 	//Save Debug Registers
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_dr6,state.dr6);
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_dr7,state.dr7);
@@ -180,6 +197,7 @@ ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_p
 	//We will assign a guest asid other than 1 as we are nesting a hypervisor.
 	//Enable Global Interrupt.
 	noir_svm_stgi();
+	noir_int3();
 	//Load Partial Guest State by vmload and continue subversion.
 	noir_svm_vmload((ulong_ptr)vcpu->vmcb.phys);
 	return (ulong_ptr)vcpu->vmcb.phys;
@@ -190,14 +208,19 @@ void static nvc_svm_subvert_processor(noir_svm_vcpu_p vcpu)
 	vcpu->status=nvc_svm_enable();
 	if(vcpu->status==noir_virt_trans)
 	{
+		noir_svm_initial_stack_p stack=(noir_svm_initial_stack_p)((ulong_ptr)vcpu->hv_stack+nvc_stack_size-sizeof(noir_svm_initial_stack));
+		stack->guest_vmcb_pa=vcpu->vmcb.phys;
+		stack->proc_id=vcpu->proc_id;
+		stack->vcpu=vcpu;
 		noir_wrmsr(amd64_hsave_pa,vcpu->hsave.phys);
-		vcpu->status=nvc_svm_subvert_processor_a(vcpu);
+		vcpu->status=nvc_svm_subvert_processor_a(stack);
 	}
 }
 
 void static nvc_svm_subvert_processor_thunk(void* context,u32 processor_id)
 {
 	noir_svm_vcpu_p vcpu=(noir_svm_vcpu_p)context;
+	vcpu[processor_id].proc_id=processor_id;
 	nvc_svm_subvert_processor(&vcpu[processor_id]);
 }
 
@@ -215,6 +238,10 @@ void nvc_svm_cleanup(noir_hypervisor_p hvm_p)
 				noir_free_contd_memory(vcpu->hsave.virt);
 			if(vcpu->hv_stack)
 				noir_free_nonpg_memory(vcpu->hv_stack);
+			if(vcpu->cpuid_cache.std_leaf)
+				noir_free_nonpg_memory(vcpu->cpuid_cache.std_leaf);
+			if(vcpu->cpuid_cache.ext_leaf)
+				noir_free_nonpg_memory(vcpu->cpuid_cache.ext_leaf);
 		}
 		noir_free_nonpg_memory(hvm_p->virtual_cpu);
 	}
@@ -222,16 +249,39 @@ void nvc_svm_cleanup(noir_hypervisor_p hvm_p)
 		noir_free_contd_memory(hvm_p->relative_hvm->msrpm.virt);
 	if(hvm_p->relative_hvm->iopm.virt)
 		noir_free_contd_memory(hvm_p->relative_hvm->iopm.virt);
-	if(host_rsp_list)
-		noir_free_nonpg_memory(host_rsp_list);
+}
+
+bool static nvc_svm_build_cpuid_cache(noir_hypervisor_p hvm_p)
+{
+	noir_svm_cpuid_info vistd,viext;
+	noir_svm_cached_cpuid_p cache=&hvm_p->virtual_cpu->cpuid_cache;
+	u32 i=0;
+	noir_cpuid(0,0,&vistd.eax,&vistd.ebx,&vistd.ecx,&vistd.edx);
+	hvm_p->relative_hvm->std_leaftotal=vistd.eax;
+	noir_cpuid(0x80000000,0,&viext.eax,&viext.ebx,&viext.ecx,&viext.edx);
+	hvm_p->relative_hvm->ext_leaftotal=viext.eax-0x80000000;
+	for(;i<hvm_p->cpu_count;cache=&hvm_p->virtual_cpu[++i].cpuid_cache)
+	{
+		cache->std_leaf=noir_alloc_nonpg_memory((hvm_p->relative_hvm->std_leaftotal+1)*sizeof(noir_svm_cpuid_info));
+		if(cache->std_leaf)
+			*cache->std_leaf=vistd;
+		else
+			return false;
+		cache->ext_leaf=noir_alloc_nonpg_memory((hvm_p->relative_hvm->ext_leaftotal+1)*sizeof(noir_svm_cpuid_info));
+		if(cache->ext_leaf)
+			*cache->ext_leaf=viext;
+		else
+			return false;
+	}
+	hvm_p->relative_hvm->cpuid_std_submask=noir_svm_cpuid_std_submask;
+	hvm_p->relative_hvm->cpuid_ext_submask=noir_svm_cpuid_ext_submask;
+	return true;
 }
 
 noir_status nvc_svm_subvert_system(noir_hypervisor_p hvm_p)
 {
 	hvm_p->cpu_count=noir_get_processor_count();
 	if(nvc_svm_build_exit_handler()==false)return noir_insufficient_resources;
-	host_rsp_list=noir_alloc_nonpg_memory(hvm_p->cpu_count*sizeof(void*));
-	if(host_rsp_list==null)return noir_insufficient_resources;
 	hvm_p->virtual_cpu=noir_alloc_nonpg_memory(hvm_p->cpu_count*sizeof(noir_svm_vcpu));
 	//Implementation of Generic Call might differ.
 	//In subversion routine, it might not be allowed to allocate memory.
@@ -253,10 +303,7 @@ noir_status nvc_svm_subvert_system(noir_hypervisor_p hvm_p)
 			else
 				goto alloc_failure;
 			vcpu->hv_stack=noir_alloc_nonpg_memory(nvc_stack_size);
-			if(vcpu->hv_stack)
-				host_rsp_list[i]=(void*)((ulong_ptr)vcpu->hv_stack+nvc_stack_size-0x20);
-			else
-				goto alloc_failure;
+			if(vcpu->hv_stack==null)return noir_insufficient_resources;
 			vcpu->relative_hvm=(noir_svm_hvm_p)hvm_p->reserved;
 		}
 	}
@@ -272,6 +319,7 @@ noir_status nvc_svm_subvert_system(noir_hypervisor_p hvm_p)
 	else
 		goto alloc_failure;
 	if(hvm_p->virtual_cpu==null)goto alloc_failure;
+	if(nvc_svm_build_cpuid_cache(hvm_p)==false)goto alloc_failure;
 	nvc_svm_setup_msr_hook(hvm_p);
 	nv_dprintf("All allocations are done, start subversion!\n");
 	noir_generic_call(nvc_svm_subvert_processor_thunk,hvm_p->virtual_cpu);
