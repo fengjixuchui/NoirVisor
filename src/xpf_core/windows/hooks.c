@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018, Zero Tang. All rights reserved.
+  Copyright 2018-2019, Zero Tang. All rights reserved.
 
   This file is auxiliary to Hooking facility (MSR Hook, Inline Hook).
 
@@ -49,7 +49,7 @@ void NoirSetProtectedFile(IN PWSTR FileName)
 	if(NoirProtectedFile)
 	{
 		KeEnterCriticalRegion();
-		if(ExAcquireResourceExclusive(&NoirProtectedFile->Lock,TRUE))
+		if(ExAcquireResourceExclusiveLite(&NoirProtectedFile->Lock,TRUE))
 		{
 			RtlZeroMemory(NoirProtectedFile->FileName,NoirProtectedFile->MaximumLength);
 			RtlStringCbCopyW(NoirProtectedFile->FileName,NoirProtectedFile->MaximumLength,FileName);
