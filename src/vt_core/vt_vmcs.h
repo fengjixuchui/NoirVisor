@@ -9,16 +9,21 @@
   without any warranty (no matter implied warranty or merchantability
   or fitness for a particular purpose, etc.).
 
-  File Location: /include/vt/vt_vmcs.h
+  Reference:
+  Appendix B, Volume 3D,
+  Intel 64 and IA-32 Architectures Software Developer's Manual
+  Order Number (Combined Volumes: 325462-070US, May 2019)
+
+  File Location: /vt_core/vt_vmcs.h
 */
 
 typedef enum _vmx_vmcs_encoding
 {
-	//16-Bit Control Fields
+	// 16-Bit Control Fields
 	virtual_processor_identifier=0x0,
 	posted_interrupt_notification_vector=0x2,
 	ept_pointer_index=0x4,
-	//16-Bit Guest State Fields
+	// 16-Bit Guest State Fields
 	guest_es_selector=0x800,
 	guest_cs_selector=0x802,
 	guest_ss_selector=0x804,
@@ -29,7 +34,7 @@ typedef enum _vmx_vmcs_encoding
 	guest_tr_selector=0x80E,
 	guest_interrupt_status=0x810,
 	pml_index=0x812,
-	//16-Bit Host State Fields
+	// 16-Bit Host State Fields
 	host_es_selector=0xC00,
 	host_cs_selector=0xC02,
 	host_ss_selector=0xC04,
@@ -37,7 +42,7 @@ typedef enum _vmx_vmcs_encoding
 	host_fs_selector=0xC08,
 	host_gs_selector=0xC0A,
 	host_tr_selector=0xC0C,
-	//64-Bit Control Fields
+	// 64-Bit Control Fields
 	address_of_io_bitmap_a=0x2000,
 	address_of_io_bitmap_b=0x2002,
 	address_of_msr_bitmap=0x2004,
@@ -62,10 +67,11 @@ typedef enum _vmx_vmcs_encoding
 	virtualization_exception_information_address=0x202A,
 	xss_exiting_bitmap=0x202C,
 	encls_exiting_bitmap=0x202E,
+	sub_page_permission_table=0x2030,
 	tsc_multiplier=0x2032,
-	//64-Bit Read-Only Fields
+	// 64-Bit Read-Only Fields
 	guest_physical_address=0x2400,
-	//64-Bit Guest-State Fields
+	// 64-Bit Guest-State Fields
 	vmcs_link_pointer=0x2800,
 	guest_msr_ia32_debug_ctrl=0x2802,
 	guest_msr_ia32_pat=0x2804,
@@ -76,11 +82,12 @@ typedef enum _vmx_vmcs_encoding
 	guest_pdpte2=0x280E,
 	guest_pdpte3=0x2810,
 	guest_msr_ia32_bound_config=0x2812,
-	//64-Bit Host State Fields
+	guest_msr_ia32_rtit_ctrl=0x2814,
+	// 64-Bit Host State Fields
 	host_msr_ia32_pat=0x2C00,
 	host_msr_ia32_efer=0x2C02,
 	host_msr_ia32_perf_global_ctrl=0x2C04,
-	//32-Bit Control Fields
+	// 32-Bit Control Fields
 	pin_based_vm_execution_controls=0x4000,
 	primary_processor_based_vm_execution_controls=0x4002,
 	exception_bitmap=0x4004,
@@ -99,7 +106,7 @@ typedef enum _vmx_vmcs_encoding
 	secondary_processor_based_vm_execution_controls=0x401E,
 	ple_gap=0x4020,
 	ple_window=0x4022,
-	//32-Bit Read-Only Fields
+	// 32-Bit Read-Only Fields
 	vm_instruction_error=0x4400,
 	vmexit_reason=0x4402,
 	vmexit_interruption_information=0x4404,
@@ -108,7 +115,7 @@ typedef enum _vmx_vmcs_encoding
 	idt_vectoring_error_code=0x440A,
 	vmexit_instruction_length=0x440C,
 	vmexit_instruction_information=0x440E,
-	//32-Bit Guest-State Fields
+	// 32-Bit Guest-State Fields
 	guest_es_limit=0x4800,
 	guest_cs_limit=0x4802,
 	guest_ss_limit=0x4804,
@@ -132,9 +139,9 @@ typedef enum _vmx_vmcs_encoding
 	guest_smbase=0x4828,
 	guest_msr_ia32_sysenter_cs_=0x482A,
 	vmx_preemption_timer_value=0x482E,
-	//32-Bit Host State Fields
+	// 32-Bit Host State Fields
 	host_msr_ia32_sysenter_cs_=0x4C00,
-	//Natural-Width Control Fields
+	// Natural-Width Control Fields
 	cr0_guest_host_mask=0x6000,
 	cr4_guest_host_mask=0x6002,
 	cr0_read_shadow=0x6004,
@@ -143,14 +150,14 @@ typedef enum _vmx_vmcs_encoding
 	cr3_target_value1=0x600A,
 	cr3_target_value2=0x600C,
 	cr3_target_value3=0x600E,
-	//Natural-Width Read-Only Fields
+	// Natural-Width Read-Only Fields
 	vmexit_qualification=0x6400,
 	io_rcx=0x6402,
 	io_rsi=0x6404,
 	io_rdi=0x6406,
 	io_rip=0x6408,
 	guest_linear_address=0x640A,
-	//Natural-Width Guest-State Fields
+	// Natural-Width Guest-State Fields
 	guest_cr0=0x6800,
 	guest_cr3=0x6802,
 	guest_cr4=0x6804,
@@ -171,7 +178,7 @@ typedef enum _vmx_vmcs_encoding
 	guest_pending_debug_exceptions=0x6822,
 	guest_msr_ia32_sysenter_esp=0x6824,
 	guest_msr_ia32_sysenter_eip=0x6826,
-	//Natural-Width Host-State Fields
+	// Natural-Width Host-State Fields
 	host_cr0=0x6C00,
 	host_cr3=0x6C02,
 	host_cr4=0x6C04,
@@ -185,3 +192,128 @@ typedef enum _vmx_vmcs_encoding
 	host_rsp=0x6C14,
 	host_rip=0x6C16
 }vmx_vmcs_encoding,*vmx_vmcs_encoding_p;
+
+/*
+  In NoirVisor's Nested Virtualization, the
+  convention is given as the followings:
+
+  Offset	Length		Information
+  0x0		0x100		VMCS Basic Header
+  0x100		0x100		Read-Only Area
+  0x100		0x40		16-Bit Read-Only Field
+  0x140		0x40		64-Bit Read-Only Field
+  0x180		0x40		32-Bit Read-Only Field
+  0x1C0		0x40		Natual-Width Read-Only Field
+  0x200		0x200		Host State Area
+  0x200		0x80		16-Bit Host-State Field
+  0x280		0x80		64-Bit Host-State Field
+  0x300		0x80		32-Bit Host-State-Field
+  0x380		0x80		Natural-Width Host-State Field
+  0x400		0x400		Guest State Area
+  0x400		0x80		16-Bit Guest-State Field
+  0x480		0x180		64-Bit Guest-State Field
+  0x600		0x100		32-Bit Guest-State Field
+  0x700		0x100		Natural-Width Guest-State Field
+  0x800		0x400		Control Area
+  0x800		0x80		16-Bit Control Field
+  0x880		0x180		64-Bit Control Field
+  0xA00		0x100		32-Bit Control Field
+  0xB00		0x100		Natural-Width Control Field
+  0xC00		0x400		Reserved.
+*/
+
+/*
+  VMCS Field has following encodings;
+  31					14	12	12	10			1	0
+  +---------------------+---+---+---+-----------+---+
+  | Reserved			| W | R | T | Field		| H	|
+  +---------------------+---+---+---+-----------+---+
+  W: Width indicator
+  R: Reserved
+  T: Type
+  H: Higher 32 Bit
+*/
+
+typedef union _ia32_vmx_vmcs_encoding
+{
+	struct
+	{
+		u32 hi:1;
+		u32 field:10;
+		u32 type:2;
+		u32 reserved1:1;
+		u32 width:2;
+		u32 reserved2:18;
+	};
+	u32 value;
+}ia32_vmx_vmcs_encoding,*ia32_vmx_vmcs_encoding_p;
+
+#if defined(_vt_nvcpu)
+const u16 noir_vt_vmcs_redirection[4][4]=
+{
+//	Control		Read-Only	Guest	Host
+	{0x800,		0x100,		0x400,	0x200},		// 16-Bit Fields
+	{0x880,		0x140,		0x480,	0x280},		// 64-Bit Fields
+	{0xA00,		0x180,		0x600,	0x300},		// 32-Bit Fields
+	{0xB00,		0x1C0,		0x700,	0x380}		// Natural-Width
+};
+
+const u8 noir_vt_vmcs_limit[4][4]=
+{
+//	Control		Read-Only	Guest	Host
+	{0x3,		0x0,		0x10,	0x7},		// 16-Bit Fields
+	{0x1A,		0x1,		0xA,	0x3},		// 64-Bit Fields
+	{0x11,		0x8,		0x17,	0x1},		// 32-Bit Fields
+	{0x8,		0x6,		0x13,	0xB}		// Natural-Width
+};
+
+const u8 noir_vt_vmcs_field_size[4]={2,8,4,sizeof(void*)};
+#endif
+
+// This structure should have 256 bytes at maximum
+typedef struct _noir_vt_nested_vmcs_header
+{
+	// Common Header as Required by Intel.
+	struct
+	{
+		u32 revision_id:31;
+		u32 shadowing:1;
+	};
+	u32 vmx_abort_indicator;
+	// Reserved 32 bytes for future Intel Modifications.
+	u64 reserved[4];
+	// 216 bytes remaining.
+	union
+	{
+		// Use clean-bits to cache VMCS info.
+		// Value of zero means VMCS is totally uncached.
+		// These fields are unlikely to be revised.
+		struct
+		{
+			// Segment Register State.
+			u64 sreg:1;
+			// Control Register State
+			u64 creg:1;
+			// Debug Register State.
+			u64 dreg:1;
+			// Virtual Processor Identifier.
+			u64 vpid:1;
+			// Pin, PriProc, 2ndProc, Exit, Entry.
+			u64 ctrl:1;
+			// MSR-Bitmap, I/O-Bitmap Address
+			u64 pmpa:1;
+			// Auto-Load/Store MSR List
+			u64 amsr:1;
+			// Guest MSRs stored in VMCS.
+			u64 gmsr:1;
+			// Host State Area
+			u64 host:1;
+			u64 reserved:54;
+			// VMCS Status indicator.
+			u64 active:1;
+			u64 launched:1;
+		};
+		u64 value;
+	}clean_fields;
+	u64 related_vmxon;
+}noir_vt_nested_vmcs_header,*noir_vt_nested_vmcs_header_p;
