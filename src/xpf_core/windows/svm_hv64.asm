@@ -14,6 +14,7 @@
 
 extern nvc_svm_subvert_processor_i:proc
 extern nvc_svm_exit_handler:proc
+extern system_cr3:qword
 
 ; Macro for pushing all GPRs to stack.
 pushaq macro
@@ -71,22 +72,23 @@ nvc_svm_return proc
 
 	; Switch the stack where state is saved.
 	mov rsp,rcx
-	; GPR state has already been saved to the stack by VMM.
 	popaq
-	popfq
-	; The target rsp is saved to rdx register.
-	mov rsp,rdx
-	; The target rflags is saved to rcx register.
+	; In the restored GPR layout, we have:
+	; rax=rip
+	; rcx=rflags
+	; rdx=rsp
 	push rcx
-	popfq
-	; The target rip is saved to rax register.
-	jmp rax
+	popfq			; Restore flags register
+	mov rsp,rdx		; Restore stack pointer
+	jmp rax			; Restore instruction pointer
 
 nvc_svm_return endp
 
 nvc_svm_exit_handler_a proc
 
 	; At this moment, VM-Exit occured.
+	; Save processor's hidden state for VM.
+	vmsave rax
 	; Save all GPRs, and pass to Exit Handler
 	pushaq
 	mov rcx,rsp
@@ -101,6 +103,8 @@ nvc_svm_exit_handler_a proc
 	popaq
 	; After popaq, rax stores the physical
 	; address of VMCB again.
+	; Load processor's hidden state for VM.
+	vmload rax
 	vmrun rax
 	; VM-Exit occured again, jump back.
 	jmp nvc_svm_exit_handler_a
@@ -111,18 +115,21 @@ nvc_svm_subvert_processor_a proc
 
 	pushfq
 	pushaq
-	push rcx
-	mov rcx,qword ptr[rcx+8]
 	mov rdx,rsp
 	mov r8,svm_launched
+	push rcx
+	mov rcx,qword ptr[rcx+8]
 	sub rsp,20h
 	; First parameter is in rcx - vcpu
 	; Second parameter is in rdx - guest rsp
 	; Third parameter is in r8 - guest rip
 	call nvc_svm_subvert_processor_i
 	add rsp,20h
+	; Switch Page Table to System Page Table
+	mov rcx,qword ptr[system_cr3]
+	mov cr3,rcx
 	; Now, rax stores the physical address of VMCB.
-	; Switch stack to host stack now.
+	; Switch stack pointer to host stack now.
 	pop rcx
 	mov rsp,rcx
 	; Stack is switched, launch guest now.
