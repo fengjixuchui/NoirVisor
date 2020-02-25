@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file is the basic driver of AMD-V Nested Paging.
 
@@ -19,6 +19,7 @@
 #include <svm_intrin.h>
 #include <intrin.h>
 #include <amd64.h>
+#include <ci.h>
 #include "svm_vmcb.h"
 #include "svm_def.h"
 #include "svm_npt.h"
@@ -33,7 +34,205 @@ void nvc_npt_cleanup(noir_npt_manager_p nptm)
 			noir_free_contd_memory(nptm->pdpt.virt);
 		if(nptm->pde.virt)
 			noir_free_2mb_page(nptm->pde.virt);
+		if(nptm->pte.head)
+		{
+			noir_npt_pte_descriptor_p cur=nptm->pte.head;
+			while(cur)
+			{
+				noir_npt_pte_descriptor_p next=cur->next;
+				noir_free_contd_memory(cur->virt);
+				noir_free_nonpg_memory(cur);
+				cur=next;
+			}
+		}
 		noir_free_nonpg_memory(nptm);
+	}
+}
+
+bool nvc_npt_update_pde(noir_npt_manager_p nptm,u64 hpa,bool r,bool w,bool x)
+{
+	amd64_addr_translator trans;
+	trans.value=hpa;
+	if(trans.pml4e_offset==0)
+	{
+		u32 index=(u32)((trans.pdpte_offset<<9)+trans.pde_offset);
+		nptm->pde.virt[index].present=r;
+		nptm->pde.virt[index].write=w;
+		nptm->pde.virt[index].no_execute=!x;
+		return true;
+	}
+	return false;
+}
+
+bool nvc_npt_update_pte(noir_npt_manager_p nptm,u64 hpa,u64 gpa,bool r,bool w,bool x)
+{
+	amd64_addr_translator hat,gat;
+	noir_npt_pte_descriptor_p pte_p=nptm->pte.head;
+	hat.value=hpa;
+	gat.value=gpa;
+	// Address above 512GB cannot be operated.
+	if(hat.pml4e_offset || gat.pml4e_offset)return false;
+	while(pte_p)
+	{
+		if(hpa>=pte_p->gpa_start && hpa<pte_p->gpa_start+page_2mb_size)
+		{
+			// The 2MB page has already been described.
+			pte_p->virt[gat.pte_offset].present=r;
+			pte_p->virt[gat.pte_offset].write=w;
+			pte_p->virt[gat.pte_offset].no_execute=!x;
+			pte_p->virt[gat.pte_offset].page_base=hpa>>12;
+			return true;
+		}
+		pte_p=pte_p->next;
+	}
+	// The 2MB page has not been described yet.
+	pte_p=noir_alloc_nonpg_memory(sizeof(noir_npt_pte_descriptor));
+	if(pte_p)
+	{
+		pte_p->virt=noir_alloc_contd_memory(page_size);
+		if(pte_p->virt)
+		{
+			u32 i=0;
+			u64 index=(gat.pdpte_offset<<9)+gat.pde_offset;
+			amd64_npt_pde_p pde_p=(amd64_npt_pde_p)&nptm->pde.virt[index];
+			// PTE Descriptor
+			pte_p->phys=noir_get_physical_address(pte_p->virt);
+			pte_p->gpa_start=index<<9;
+			for(;i<512;i++)
+			{
+				pte_p->virt[i].present=1;
+				pte_p->virt[i].write=1;
+				pte_p->virt[i].user=1;
+				pte_p->virt[i].page_base=pte_p->gpa_start+i;
+			}
+			pte_p->gpa_start<<=12;
+			// Page Attributes
+			pte_p->virt[gat.pte_offset].present=r;
+			pte_p->virt[gat.pte_offset].write=w;
+			pte_p->virt[gat.pte_offset].no_execute=!x;
+			pte_p->virt[gat.pte_offset].page_base=hpa>>12;
+			// Update PDE
+			pde_p->reserved1=0;
+			pde_p->pte_base=pte_p->phys>>12;
+			// Update Linked-List
+			if(nptm->pte.head && nptm->pte.tail)
+			{
+				nptm->pte.tail->next=pte_p;
+				nptm->pte.tail=pte_p;
+			}
+			else
+			{
+				nptm->pte.head=pte_p;
+				nptm->pte.tail=pte_p;
+			}
+			return true;
+		}
+		noir_free_nonpg_memory(pte_p);
+	}
+	return false;
+}
+
+
+/*
+  It is important that the hypervisor essentials should be protected.
+  The malware in guest may tamper the VMCB through any read or write
+  instruction. Since SVM VMCB layout is publicized, if malware knows
+  the address of VMCB, then things will be problematic.
+
+  By Now, any read/write to the protected area would be redirected a
+  page that is purposefully and deliberately left blank.
+  This design could reduce #NPF.
+*/
+bool nvc_npt_protect_critical_hypervisor(noir_hypervisor_p hvm)
+{
+	noir_npt_manager_p pri_nptm=(noir_npt_manager_p)hvm->relative_hvm->primary_nptm;
+	hvm->relative_hvm->blank_page.virt=noir_alloc_contd_memory(page_size);
+	if(hvm->relative_hvm->blank_page.virt)
+	{
+		noir_npt_pte_descriptor_p cur=null;
+		bool result=true;
+		u32 i=0;
+		hvm->relative_hvm->blank_page.phys=noir_get_physical_address(hvm->relative_hvm->blank_page.virt);
+		// Protect MSRPM and IOPM
+		result&=nvc_npt_update_pte(pri_nptm,hvm->relative_hvm->msrpm.phys,hvm->relative_hvm->blank_page.phys,true,true,true);
+		// Protect HSAVE and VMCB
+		for(;i<hvm->cpu_count;i++)
+		{
+			noir_svm_vcpu_p vcpu=&hvm->virtual_cpu[i];
+			result&=nvc_npt_update_pte(pri_nptm,vcpu->hsave.phys,hvm->relative_hvm->blank_page.phys,true,true,true);
+			result&=nvc_npt_update_pte(pri_nptm,vcpu->vmcb.phys,hvm->relative_hvm->blank_page.phys,true,true,true);
+		}
+		// Protect Nested Paging Structure
+		result&=nvc_npt_update_pte(pri_nptm,pri_nptm->ncr3.phys,hvm->relative_hvm->blank_page.phys,true,true,true);
+		result&=nvc_npt_update_pte(pri_nptm,pri_nptm->pdpt.phys,hvm->relative_hvm->blank_page.phys,true,true,true);
+		// For PDE, memory usage would be too high to protect a 2MB page.
+		// Disable the writing permission is enough, though.
+		result&=nvc_npt_update_pde(pri_nptm,pri_nptm->pde.phys,true,false,true);
+		// Update PTEs...
+		for(cur=pri_nptm->pte.head;cur;cur=cur->next)
+			result&=nvc_npt_update_pte(pri_nptm,cur->phys,hvm->relative_hvm->blank_page.phys,true,true,true);
+		return result;
+	}
+	return false;
+}
+
+bool nvc_npt_initialize_ci(noir_npt_manager_p nptm)
+{
+	bool r=true;
+	u32 i=0;
+	for(;i<noir_ci->pages;i++)
+	{
+		u64 phys=noir_ci->page_ci[i].phys;
+		r&=nvc_npt_update_pte(nptm,phys,phys,true,false,true);
+		if(!r)break;
+	}
+	return r;
+}
+
+void nvc_npt_build_hook_mapping(noir_hypervisor_p hvm)
+{
+	u32 i=0;
+	noir_npt_pte_descriptor_p pte_p=null;
+	noir_hook_page_p nhp=null;
+	noir_npt_manager_p pri_nptm=(noir_npt_manager_p)hvm->relative_hvm->primary_nptm;
+	noir_npt_manager_p sec_nptm=(noir_npt_manager_p)hvm->relative_hvm->secondary_nptm;
+	// In this function, we build mappings necessary to make stealth inline hook.
+	for(nhp=noir_hook_pages;i<noir_hook_pages_count;nhp=&noir_hook_pages[++i])
+		nvc_npt_update_pte(pri_nptm,nhp->orig.phys,nhp->orig.phys,true,true,false);
+	i=0;
+	for(nhp=noir_hook_pages;i<noir_hook_pages_count;nhp=&noir_hook_pages[++i])
+		nvc_npt_update_pte(sec_nptm,nhp->hook.phys,nhp->orig.phys,true,true,true);
+	// Set all necessary PDEs to NX.
+	for(i=0;i<512;i++)
+	{
+		u32 j=0;
+		for(;j<512;j++)
+		{
+			u32 k=(i<<9)+j;
+			if(sec_nptm->pde.virt[k].large_pde)
+				sec_nptm->pde.virt[k].no_execute=true;
+		}
+	}
+	// Set all PTEs to NX
+	for(pte_p=sec_nptm->pte.head;pte_p;pte_p=pte_p->next)
+		for(i=0;i<512;i++)
+			pte_p->virt[i].no_execute=true;
+	// Select PTEs that should be X.
+	i=0;
+	for(nhp=noir_hook_pages;i<noir_hook_pages_count;nhp=&noir_hook_pages[++i])
+	{
+		amd64_addr_translator trans;
+		trans.value=nhp->orig.phys;
+		// Select PTE
+		for(pte_p=sec_nptm->pte.head;pte_p;pte_p=pte_p->next)
+		{
+			if(nhp->orig.phys>=pte_p->gpa_start && nhp->orig.phys<pte_p->gpa_start+page_2mb_size)
+			{
+				pte_p->virt[trans.pte_offset].no_execute=false;
+				nhp->pte_descriptor=(void*)&pte_p->virt[trans.pte_offset];
+				break;
+			}
+		}
 	}
 }
 
@@ -107,6 +306,12 @@ noir_npt_manager_p nvc_npt_build_identity_map()
 		nptm->ncr3.virt->write=1;
 		nptm->ncr3.virt->user=1;
 		nptm->ncr3.virt->pdpte_base=nptm->pdpt.phys>>12;
+	}
+	else
+	{
+		nvc_npt_cleanup(nptm);
+		nv_dprintf("Allocation Failure! Failed to build NPT paging structure!\n");
+		nptm=null;
 	}
 	return nptm;
 }

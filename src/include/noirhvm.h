@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file is the central HyperVisor of NoirVisor.
 
@@ -15,14 +15,27 @@
 #include "nvdef.h"
 #if defined(_vt_drv) || defined(_vt_exit) || defined(_vt_ept) || defined(_vt_nvcpu)
 #include "vt_hvm.h"
-#elif defined(_svm_drv) || defined(_svm_exit)
+#elif defined(_svm_drv) || defined(_svm_exit) || defined(_svm_npt)
 #include "svm_hvm.h"
 #endif
 
 // Known Processor Manufacturer Encoding
-#define intel_processor			0	// Intel VT-x
-#define amd_processor			1	// AMD-V
-#define via_processor			2	// VIA VT
+// Notice that some manufacturers of x86 processors might also
+// introduce hardware-accelerated virtualization technology.
+#define intel_processor			0		// Intel Processor (Intel VT-x)
+#define amd_processor			1		// AMD Processor (AMD-V)
+#define via_processor			2		// VIA Processor (Intel VT-x)
+#define zhaoxin_processor		3		// Zhaoxin Processor (Intel VT-x)
+#define hygon_processor			4		// Hygon Processor (AMD-V)
+#define cyrix_processor			5		// Cyrix Processor (N/A)
+#define centaur_processor		6		// Centaur Processor (N/A)
+#define trmeta_processor		7		// Transmeta Processor (N/A)
+#define nexgen_processor		8		// NexGen Processor (N/A)
+#define sis_processor			9		// SiS Processor (N/A)
+#define nsc_processor			10		// National Semiconductor Processor (N/A)
+#define rise_processor			11		// Rise Processor (N/A)
+#define umc_processor			12		// UMC Processor (N/A)
+#define vortex_processor		13		// Vortex Processor (N/A)
 #define unknown_processor		0xff
 
 // Processor State of Virtualization
@@ -58,15 +71,15 @@ typedef struct _noir_hypervisor
 	u64 reserved[0x10];	// Reserve 128 bytes for Relative HVM.
 }noir_hypervisor,*noir_hypervisor_p;
 
-#if !defined(_central_hvm)
+#if !defined(_central_hvm) && !defined(_code_integrity)
 typedef struct _noir_hook_page
 {
 	memory_descriptor orig;
 	memory_descriptor hook;
 	void* pte_descriptor;
-	struct _noir_hook_page* next;
 }noir_hook_page,*noir_hook_page_p;
 extern noir_hook_page_p noir_hook_pages;
+extern u32 noir_hook_pages_count;
 #endif
 
 #if defined(_central_hvm)
@@ -94,4 +107,48 @@ extern noir_hypervisor_p hvm_p;
 extern ulong_ptr system_cr3;
 extern ulong_ptr orig_system_call;
 #endif
-extern void noir_system_call();
+void noir_system_call();
+
+#if defined(_central_hvm)
+#define known_vendor_strings	16
+// This list is sorted for acceleration through binary search.
+char* vendor_string_list[known_vendor_strings]=
+{
+	" Shanghai ",		// Zhaoxin
+	"AMDisbetter!",		// Early ES of AMD-K5
+	"AuthenticAMD",		// AMD
+	"CentaurHauls",		// Centaur (Some VIA)
+	"CyrixInstead",		// Cyrix
+	"GenuineIntel",		// Intel
+	"GenuineTMx86",		// Transmeta
+	"Geode by NSC",		// National Semiconductor
+	"HygonGenuine",		// Hygon (AMD-China-Joint)
+	"NexGenDriven",		// NexGen
+	"RiseRiseRise",		// Rise
+	"SiS SiS SiS ",		// SiS
+	"TransmetaCPU",		// Transmeta
+	"UMC UMC UMC ",		// UMC
+	"VIA VIA VIA ",		// VIA
+	"Vortex86 SoC",		// Vortex
+};
+
+u8 cpu_manuf_list[known_vendor_strings]=
+{
+	zhaoxin_processor,
+	amd_processor,
+	amd_processor,
+	centaur_processor,
+	cyrix_processor,
+	intel_processor,
+	trmeta_processor,
+	nsc_processor,
+	hygon_processor,
+	nexgen_processor,
+	rise_processor,
+	sis_processor,
+	trmeta_processor,
+	umc_processor,
+	via_processor,
+	vortex_processor
+};
+#endif

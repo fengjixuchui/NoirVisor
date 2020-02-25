@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file is the basic driver of Intel EPT.
 
@@ -162,12 +162,14 @@ typedef union _ia32_ept_pte
 	u64 value;
 }ia32_ept_pte,*ia32_ept_pte_p;
 
+// Notice that EPT PTE Descriptor is describing
+// 512 4KB-Pages in a 2MB Page.
 typedef struct _noir_ept_pte_descriptor
 {
+	struct _noir_ept_pte_descriptor* next;
 	ia32_ept_pte_p virt;
 	u64 phys;
 	u64 gpa_start;
-	struct _noir_ept_pte_descriptor* next;
 }noir_ept_pte_descriptor,*noir_ept_pte_descriptor_p;
 
 typedef struct _noir_ept_manager

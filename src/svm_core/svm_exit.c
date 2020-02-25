@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file is the basic Exit Handler of SVM Driver.
 
@@ -18,7 +18,9 @@
 #include <svm_intrin.h>
 #include <intrin.h>
 #include <amd64.h>
+#include <ci.h>
 #include "svm_vmcb.h"
+#include "svm_npt.h"
 #include "svm_exit.h"
 #include "svm_def.h"
 
@@ -221,14 +223,72 @@ void static fastcall nvc_svm_vmmcall_handler(noir_gpr_state_p gpr_state,noir_svm
 }
 
 // Expected Intercept Code: 0x400
+// Do not output to debugger since this may seriously degrade performance.
 void static fastcall nvc_svm_nested_pf_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
-	nv_dprintf("Nested Page Fault is intercepted!\n");
-	nv_dprintf("Current vCPU: 0x%p\n",vcpu);
-	noir_int3();
+	bool advance=true;
+	i32 lo=0,hi=noir_hook_pages_count;
+	// Necessary Information for #NPF VM-Exit.
+	u64 gpa=noir_svm_vmread64(vcpu->vmcb.virt,exit_info2);
+	amd64_npt_fault_code fault;
+	fault.value=noir_svm_vmread64(vcpu->vmcb.virt,exit_info1);
+	if(fault.execute)
+	{
+		// Check if we should switch to secondary.
+		while(hi>=lo)
+		{
+			i32 mid=(lo+hi)>>1;
+			noir_hook_page_p nhp=&noir_hook_pages[mid];
+			if(gpa>=nhp->orig.phys+page_size)
+				lo=mid+1;
+			else if(gpa<nhp->orig.phys)
+				hi=mid-1;
+			else
+			{
+				noir_npt_manager_p nptm=(noir_npt_manager_p)hvm_p->relative_hvm->secondary_nptm;
+				noir_svm_vmwrite64(vcpu->vmcb.virt,npt_cr3,nptm->ncr3.phys);
+				advance=false;
+				break;
+			}
+		}
+		if(advance)
+		{
+			// Execution is outside hooked page.
+			// We should switch to primary.
+			noir_npt_manager_p nptm=(noir_npt_manager_p)hvm_p->relative_hvm->primary_nptm;
+			noir_svm_vmwrite64(vcpu->vmcb.virt,npt_cr3,nptm->ncr3.phys);
+			advance=false;
+		}
+		// We switched NPT. Thus we should clean VMCB cache state.
+		noir_btr((u32*)((ulong_ptr)vcpu->vmcb.virt+vmcb_clean_bits),noir_svm_clean_npt);
+	}
+	/*
+	  There are three inspections in #NPF handler of NoirVisor.
+	  Inspection I:		Stealth Inline Hook Concealment
+	  Inspection II:	Real-Time Code Integrity Enforcement
+	  Inspection III:	Critical Hypervisor Protection
+	  
+	  We simply have to make inspection I.
+	  Inspection II & III does not matter as we initialized
+	  the "advance" variable to true.
+	*/
+	// Fix ME: Complete the Inspection I - Stealth Inline Hook.
+	// Inspection I completed...
+	if(advance)
+	{
+		// Note that SVM won't save the next rip in #NPF.
+		// Hence we should advance rip by software analysis.
+		void* instruction=(void*)((ulong_ptr)vcpu->vmcb.virt+guest_instruction_bytes);
+		// Determine Long-Mode through CS.L bit.
+		u16* cs_attrib=(u16*)((ulong_ptr)vcpu->vmcb.virt+guest_cs_attrib);
+		u32 increment=noir_get_instruction_length(instruction,noir_bt(cs_attrib,9));
+		ulong_ptr gip=noir_svm_vmread(vcpu->vmcb.virt,guest_rip);
+		gip+=increment;
+		noir_svm_vmwrite(vcpu->vmcb.virt,guest_rip,gip);
+	}
 }
 
-void nvc_svm_exit_handler(noir_gpr_state_p gpr_state,u32 processor_id)
+void fastcall nvc_svm_exit_handler(noir_gpr_state_p gpr_state,u32 processor_id)
 {
 	// Get Virtual CPU and the linear address of VMCB.
 	noir_svm_vcpu_p vcpu=&hvm_p->virtual_cpu[processor_id];

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file defines structures and constants for SVM Driver of NoirVisor.
 
@@ -35,6 +35,7 @@ typedef struct _noir_svm_hvm
 {
 	memory_descriptor msrpm;
 	memory_descriptor iopm;
+	memory_descriptor blank_page;
 	void* primary_nptm;
 	void* secondary_nptm;
 	u32 std_leaftotal;
@@ -81,10 +82,10 @@ typedef struct _noir_svm_initial_stack
 	u32 proc_id;
 }noir_svm_initial_stack,*noir_svm_initial_stack_p;
 
-u8 nvc_svm_subvert_processor_a(noir_svm_initial_stack_p host_rsp);
+u8 fastcall nvc_svm_subvert_processor_a(noir_svm_initial_stack_p host_rsp);
+void fastcall nvc_svm_return(noir_gpr_state_p stack);
 void fastcall nvc_svm_reserved_cpuid_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu);
 bool nvc_svm_build_cpuid_handler(u32 std_count,u32 hvm_count,u32 ext_count,u32 res_count);
 void nvc_svm_teardown_cpuid_handler();
 bool nvc_svm_build_exit_handler();
 void nvc_svm_teardown_exit_handler();
-void nvc_svm_return(noir_gpr_state_p stack);

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file is the exit handler of Intel VT-x.
 
@@ -257,7 +257,7 @@ void static fastcall nvc_vt_vmcall_handler(noir_gpr_state_p gpr_state,u32 exit_r
 		if(vcpu->status==noir_virt_nesting)
 		{
 			u64 linked_vmcs;
-			noir_vt_vmread(vmcs_link_pointer,&linked_vmcs);
+			noir_vt_vmread64(vmcs_link_pointer,&linked_vmcs);
 			if(linked_vmcs==0xffffffffffffffff)
 				noir_vt_vmfail_invalid();		// At this moment, valid VMCS is not loaded.
 			else
@@ -281,7 +281,7 @@ ulong_ptr static nvc_vt_parse_vmx_pointer(noir_gpr_state_p gpr_state)
 	ulong_ptr pointer,seg_base;
 	u32 seg_base_field=guest_es_base;
 	// Load Instruction Information.
-	noir_vt_vmread(vmexit_instruction_information,&info);
+	noir_vt_vmread(vmexit_instruction_information,(u32*)&info);
 	// Get Displacement
 	noir_vt_vmread(vmexit_qualification,&displacement);
 	// Load Base Register.
@@ -489,7 +489,7 @@ void static fastcall nvc_vt_cr_access_handler(noir_gpr_state_p gpr_state,u32 exi
 	noir_vt_vcpu_p vcpu=&hvm_p->virtual_cpu[cur_proc];
 	ia32_cr_access_qualification info;
 	bool advance_ip=true;
-	noir_vt_vmread(vmexit_qualification,&info);
+	noir_vt_vmread(vmexit_qualification,(ulong_ptr*)&info);
 	switch(info.access_type)
 	{
 		case 0:
@@ -654,16 +654,26 @@ void static fastcall nvc_vt_invalid_msr_loading(noir_gpr_state_p gpr_state,u32 e
 
 // Expected Exit Reason: 48
 // This is VM-Exit of obligation on EPT.
-// Specifically, this handler is invoked on EPT-based stealth hook.
+// Specifically, this handler is invoked on EPT-based stealth hook feature.
+// Critical Hypervisor Protection and Real-Time Code Integrity features
+// may invoke this handler. Simply advance the rip for these circumstances.
 void static fastcall nvc_vt_ept_violation_handler(noir_gpr_state_p gpr_state,u32 exit_reason)
 {
-	noir_hook_page_p nhp=noir_hook_pages;
+	i32 lo=0,hi=noir_hook_pages_count;
 	u64 gpa;
 	bool advance=true;
-	noir_vt_vmread(guest_physical_address,&gpa);
-	for(;nhp;nhp=nhp->next)
+	noir_vt_vmread64(guest_physical_address,&gpa);
+	// We previously sorted the list.
+	// Use binary search to reduce time complexity.
+	while(hi>=lo)
 	{
-		if(gpa>=nhp->orig.phys && gpa<nhp->orig.phys+page_size)
+		i32 mid=(lo+hi)>>1;
+		noir_hook_page_p nhp=&noir_hook_pages[mid];
+		if(gpa>=nhp->orig.phys+page_size)
+			lo=mid+1;
+		else if(gpa<nhp->orig.phys)
+			hi=mid-1;
+		else
 		{
 			ia32_ept_violation_qualification info;
 			invept_descriptor ied;
@@ -672,7 +682,7 @@ void static fastcall nvc_vt_ept_violation_handler(noir_gpr_state_p gpr_state,u32
 			u32 proc_num=noir_get_current_processor();
 			noir_vt_vcpu_p vcpu=&hvm_p->virtual_cpu[proc_num];
 			noir_ept_manager_p eptm=(noir_ept_manager_p)vcpu->ept_manager;
-			noir_vt_vmread(vmexit_qualification,&info);
+			noir_vt_vmread(vmexit_qualification,(ulong_ptr*)&info);
 			if(info.read || info.write)
 			{
 				// If the access is read or write, we grant

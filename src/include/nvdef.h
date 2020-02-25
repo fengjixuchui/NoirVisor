@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2019, Zero Tang. All rights reserved.
+  Copyright 2018-2020, Zero Tang. All rights reserved.
 
   This file defines basic types, constants, etc.
 
@@ -32,6 +32,7 @@ typedef i64 long_ptr;
 #else
 typedef u32 ulong_ptr;
 typedef i32 long_ptr;
+typedef i32 size_t;
 #endif
 
 typedef volatile u8		u8v;
