@@ -16,7 +16,7 @@
 #include <nvbdk.h>
 #include <noirhvm.h>
 #include <svm_intrin.h>
-#include <intrin.h>
+#include <nv_intrin.h>
 #include <amd64.h>
 #include "svm_vmcb.h"
 #include "svm_exit.h"
@@ -61,8 +61,9 @@ void nvc_svm_build_cpuid_cache_per_vcpu(noir_svm_vcpu_p vcpu)
 	info=(noir_svm_cpuid_default_p)vcpu->cpuid_cache.std_leaf[std_proc_feature];
 	noir_bts(&info->ecx,amd64_cpuid_hv_presence);
 	// Function leaf 0x7 - Structured Extended Feature Identifiers
-	// There is only one subleaf in this function leaf.
-
+	info=(noir_svm_cpuid_default_p)vcpu->cpuid_cache.std_leaf[std_struct_extid];
+	for(i=1;i<=info->eax;i++)
+		noir_cpuid(std_struct_extid,i,&info[i].eax,&info[i].ebx,&info[i].ecx,&info[i].edx);
 	// Function leaf 0xD - Processor Extended State Enumeration
 	// There are multiple subfunctions in this leaf.
 	info=(noir_svm_cpuid_default_p)vcpu->cpuid_cache.std_leaf[std_pestate_enum];
@@ -164,27 +165,16 @@ void static fastcall nvc_svm_default_cpuid_handler(noir_gpr_state_p gpr_state,no
   the standard function leaves. The range starts from 0.
 */
 
-// Function Leaf: 0x00000000 - Maximum Number of Leaves and Vendor String
-void static fastcall nvc_svm_cpuid_std_vendor_string(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
-{
-	noir_svm_cpuid_max_num_vstr_p cache=(noir_svm_cpuid_max_num_vstr_p)vcpu->cpuid_cache.std_leaf[std_max_num_vstr];
-	// EAX - Maximum Number of CPUID
-	*(u32*)&gpr_state->rax=cache->maximum;
-	// EBX-EDX-ECX -> "AuthenticAMD" by default
-	*(u32*)&gpr_state->rbx=*(u32*)&cache->vendor_string[0];
-	*(u32*)&gpr_state->rcx=*(u32*)&cache->vendor_string[8];
-	*(u32*)&gpr_state->rdx=*(u32*)&cache->vendor_string[4];
-}
-
 // Function Leaf: 0x00000007 - Structured Extended Feature Identifiers
 // This leaf has multiple subleaves, so we have to make special treatments during caching.
 void static fastcall nvc_svm_cpuid_std_struct_extid(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
 	noir_svm_cpuid_default_p cache=(noir_svm_cpuid_default_p)vcpu->cpuid_cache.std_leaf[std_struct_extid];
-	*(u32*)&gpr_state->rax=cache->eax;
-	*(u32*)&gpr_state->rbx=cache->ebx;
-	*(u32*)&gpr_state->rcx=cache->ecx;
-	*(u32*)&gpr_state->rdx=cache->edx;
+	u32 subleaf=(u32)gpr_state->rcx;
+	*(u32*)&gpr_state->rax=cache[subleaf].eax;
+	*(u32*)&gpr_state->rbx=cache[subleaf].ebx;
+	*(u32*)&gpr_state->rcx=cache[subleaf].ecx;
+	*(u32*)&gpr_state->rdx=cache[subleaf].edx;
 }
 
 // Function Leaf: 0x0000000D - Processor Extended State Enumeration
@@ -222,51 +212,6 @@ void static fastcall nvc_svm_cpuid_std_pestate_enum(noir_gpr_state_p gpr_state,n
   In this section, handler functions should be regarding the
   extended function leaves. The range starts from 0x80000000.
 */
-
-// Function Leaf: 0x80000000 - Maximum Number of Leaves and Vendor String
-void static fastcall nvc_svm_cpuid_ext_vendor_string(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
-{
-	noir_svm_cpuid_max_num_vstr_p cache=(noir_svm_cpuid_max_num_vstr_p)vcpu->cpuid_cache.ext_leaf[ext_max_num_vstr];
-	// EAX - Maximum Number of CPUID
-	*(u32*)&gpr_state->rax=cache->maximum;
-	// EBX-EDX-ECX -> "AuthenticAMD" by default
-	*(u32*)&gpr_state->rbx=*(u32*)&cache->vendor_string[0];
-	*(u32*)&gpr_state->rcx=*(u32*)&cache->vendor_string[8];
-	*(u32*)&gpr_state->rdx=*(u32*)&cache->vendor_string[4];
-}
-
-// Function Leaf: 0x80000002 - Processor Name String (Part I)
-void static fastcall nvc_svm_cpuid_ext_brand_string_p1(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
-{
-	char* brand=(char*)vcpu->cpuid_cache.ext_leaf[ext_brand_str_p1];
-	// Sorted by EAX-EBX-ECX-EDX
-	*(u32*)&gpr_state->rax=*(u32*)&brand[0x0];
-	*(u32*)&gpr_state->rbx=*(u32*)&brand[0x4];
-	*(u32*)&gpr_state->rcx=*(u32*)&brand[0x8];
-	*(u32*)&gpr_state->rdx=*(u32*)&brand[0xC];
-}
-
-// Function Leaf: 0x80000003 - Processor Name String (Part II)
-void static fastcall nvc_svm_cpuid_ext_brand_string_p2(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
-{
-	char* brand=(char*)vcpu->cpuid_cache.ext_leaf[ext_brand_str_p2];
-	// Sorted by EAX-EBX-ECX-EDX
-	*(u32*)&gpr_state->rax=*(u32*)&brand[0x0];
-	*(u32*)&gpr_state->rbx=*(u32*)&brand[0x4];
-	*(u32*)&gpr_state->rcx=*(u32*)&brand[0x8];
-	*(u32*)&gpr_state->rdx=*(u32*)&brand[0xC];
-}
-
-// Function Leaf: 0x80000004 - Processor Name String (Part III)
-void static fastcall nvc_svm_cpuid_ext_brand_string_p3(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
-{
-	char* brand=(char*)vcpu->cpuid_cache.ext_leaf[ext_brand_str_p3];
-	// Sorted by EAX-EBX-ECX-EDX
-	*(u32*)&gpr_state->rax=*(u32*)&brand[0x0];
-	*(u32*)&gpr_state->rbx=*(u32*)&brand[0x4];
-	*(u32*)&gpr_state->rcx=*(u32*)&brand[0x8];
-	*(u32*)&gpr_state->rdx=*(u32*)&brand[0xC];
-}
 
 // Function Leaf: 0x8000000A - SVM Revision and Feature Id
 void static fastcall nvc_svm_cpuid_ext_svm_feature_id(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
@@ -327,7 +272,7 @@ bool nvc_svm_build_cpuid_handler(u32 std_count,u32 hvm_count,u32 ext_count,u32 r
 		svm_cpuid_handlers[std_leaf_index]=noir_alloc_nonpg_memory(sizeof(void*)*std_count);
 		svm_cpuid_handlers[hvm_leaf_index]=noir_alloc_nonpg_memory(sizeof(void*)*hvm_count);
 		svm_cpuid_handlers[ext_leaf_index]=noir_alloc_nonpg_memory(sizeof(void*)*ext_count);
-		if(svm_cpuid_handlers[std_leaf_index] && svm_cpuid_handlers[ext_leaf_index])
+		if(svm_cpuid_handlers[std_leaf_index] && svm_cpuid_handlers[hvm_leaf_index] && svm_cpuid_handlers[ext_leaf_index])
 		{
 			// Initialize CPUID handlers with default handlers.
 			// Using stos instruction could accelerate the initialization.
