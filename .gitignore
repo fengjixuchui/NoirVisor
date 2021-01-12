@@ -6,6 +6,11 @@
 *.ko
 *.obj
 *.elf
+*.lib
+
+# Binary Resources
+*.res
+RC*
 
 # Linker output
 *.ilk

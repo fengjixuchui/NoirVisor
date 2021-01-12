@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file defines basic structure of VMCB.
 
@@ -26,6 +26,18 @@
 #define noir_svm_vmwrite32(v,o,d)		*(u32*)((ulong_ptr)v+o)=(u32)d
 #define noir_svm_vmwrite64(v,o,d)		*(u64*)((ulong_ptr)v+o)=(u64)d
 
+#define noir_svm_vmcb_bt32(v,o,d)		noir_bt((u32*)((ulong_ptr)v+o),d)
+#define noir_svm_vmcb_bts32(v,o,d)		noir_bts((u32*)((ulong_ptr)v+o),d)
+#define noir_svm_vmcb_btr32(v,o,d)		noir_btr((u32*)((ulong_ptr)v+o),d)
+#define noir_svm_vmcb_btc32(v,o,d)		noir_btc((u32*)((ulong_ptr)v+o),d)
+
+#if defined(_amd64)
+#define noir_svm_vmcb_bt64(v,o,d)		noir_bt64((u64*)((ulong_ptr)v+o),d)
+#define noir_svm_vmcb_bts64(v,o,d)		noir_bts64((u64*)((ulong_ptr)v+o),d)
+#define noir_svm_vmcb_btr64(v,o,d)		noir_btr64((u64*)((ulong_ptr)v+o),d)
+#define noir_svm_vmcb_btc64(v,o,d)		noir_btc64((u64*)((ulong_ptr)v+o),d)
+#endif
+
 #if defined(_amd64)
 #define noir_svm_vmread		noir_svm_vmread64
 #define noir_svm_vmwrite	noir_svm_vmwrite64
@@ -48,6 +60,7 @@ typedef enum _svm_vmcb_offset
 	intercept_instruction1=0xC,
 	intercept_instruction2=0x10,
 	intercept_write_cr_post=0x12,
+	intercept_instruction3=0x14,
 	pause_filter_threshold=0x3C,
 	pause_filter_count=0x3E,
 	iopm_physical_address=0x40,
@@ -74,7 +87,7 @@ typedef enum _svm_vmcb_offset
 	avic_backing_page_pointer=0xE0,
 	avic_logical_table_pointer=0xF0,
 	avic_physical_table=0xF8,
-	vmcb_state_save_pointer=0x108,
+	vmsa_pointer=0x108,
 	// Following offset definitions would be unusable if SEV-ES is enabled.
 	// State Save Area - SEV-ES Disabled
 	// ES
@@ -138,6 +151,9 @@ typedef enum _svm_vmcb_offset
 	guest_rflags=0x570,
 	guest_rip=0x578,
 	guest_rsp=0x5D8,
+	guest_s_cet=0x5E0,
+	guest_ssp=0x5E8,
+	guest_isst=0x5F0,
 	guest_rax=0x5F8,
 	guest_star=0x600,
 	guest_lstar=0x608,
@@ -158,7 +174,7 @@ typedef enum _svm_vmcb_offset
 
 //Following definitions is for State Save Area with SEV-ES Enabled
 //You may notice the offset is 0x400 different from corresponding fields.
-typedef enum _svm_sev_es_offset
+typedef enum _svm_vmsa_offset
 {
 	guest_sev_es_segment=0x0,
 	guest_sev_cs_segment=0x10,
@@ -179,6 +195,14 @@ typedef enum _svm_sev_es_offset
 	guest_sev_dr6=0x168,
 	guest_sev_rflags=0x170,
 	guest_sev_rip=0x178,
+	guest_sev_dr0=0x180,
+	guest_sev_dr1=0x188,
+	guest_sev_dr2=0x190,
+	guest_sev_dr3=0x198,
+	guest_sev_dr0_mask=0x1A0,
+	guest_sev_dr1_mask=0x1A8,
+	guest_sev_dr2_mask=0x1B0,
+	guest_sev_dr3_mask=0x1B8,
 	guest_sev_rsp=0x1D8,
 	guest_sev_rax=0x1F8,
 	guest_sev_star=0x200,
@@ -210,12 +234,18 @@ typedef enum _svm_sev_es_offset
 	guest_sev_r13=0x368,
 	guest_sev_r14=0x370,
 	guest_sev_r15=0x378,
-	sw_exit_code=0x390,
-	sw_exit_info1=0x398,
-	sw_exit_info2=0x3A0,
-	sw_scratch=0x3A8,
+	sw_exit_info1=0x390,
+	sw_exit_info2=0x398,
+	sw_exit_int_info=0x3A0,
+	sw_next_rip=0x3A8,
+	sev_features=0x3B0,
+	sev_vintr_ctrl=0x3B8,
+	sev_guest_exitcode=0x3C0,
+	sev_virtual_tom=0x3C8,
+	sev_tlb_id=0x3D0,
+	sev_pcpu_id=0x3D8,
+	sev_event_injection=0x3E0,
 	guest_sev_xcr0=0x3E8,
-	sev_valid_bitmap=0x3F0,
 	guest_sev_x87dp=0x400,
 	guest_sev_mxcsr=0x408,
 	guest_sev_x87ftw=0x40C,
@@ -228,4 +258,4 @@ typedef enum _svm_sev_es_offset
 	guest_sev_fpreg_x87=0x420,
 	guest_sev_fpreg_xmm=0x470,
 	guest_sev_fpreg_ymm=0x570
-}svm_sev_es_offset,*svm_sev_es_offset_p;
+}svm_vmsa_offset,*svm_vmsa_offset_p;

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is auxiliary to MSR-Hook facility to optimize compatibility.
 
@@ -69,6 +69,11 @@ PVOID NoirLocateImageBaseByName(IN PWSTR ImageName);
 PVOID NoirLocateExportedProcedureByName(IN PVOID ImageBase,IN PSTR ProcedureName);
 void __cdecl NoirDebugPrint(const char* Format,...);
 PVOID NoirAllocateContiguousMemory(IN ULONG Length);
+PVOID NoirAllocateNonPagedMemory(IN SIZE_T Length);
+PVOID NoirAllocatePagedMemory(IN SIZE_T Length);
+void NoirFreeContiguousMemory(PVOID VirtualAddress);
+void NoirFreeNonPagedMemory(void* VirtualAddress);
+void NoirFreePagedMemory(void* virtual_address);
 ULONG64 NoirGetPhysicalAddress(IN PVOID VirtualAddress);
 ULONG GetPatchSize(IN PVOID Code,IN ULONG Length);
 

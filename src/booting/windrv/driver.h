@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the kernel-mode driver framework of Windows.
 
@@ -32,12 +32,14 @@
 #define IOCTL_OsVer			CTL_CODE_GEN(0x813)
 #define IOCTL_VirtCap		CTL_CODE_GEN(0x814)
 
-void LDE_Initialize();
-void LDE_Finalize();
+void NoirInitializeDisassembler();
+NTSTATUS NoirReportWindowsVersion();
 NTSTATUS NoirBuildProtectedFile();
 void NoirTeardownProtectedFile();
 void NoirSetProtectedFile(IN PWSTR FileName);
+void NoirPrintCompilerVersion();
 NTSTATUS NoirGetSystemVersion(OUT PWSTR VersionString,IN ULONG VersionLength);
+void NoirReportMemoryIntrospectionCounter();
 ULONG NoirBuildHypervisor();
 void NoirTeardownHypervisor();
 ULONG NoirVisorVersion();

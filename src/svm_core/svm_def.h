@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file defines constants and basic structures for AMD-V.
 
@@ -14,7 +14,7 @@
 
 #include <nvdef.h>
 
-#define svm_attrib(a)		(u16)(a&0xFF)|((a&0xF000)>>4)
+#define svm_attrib(a)		(u16)(((a&0xFF)|((a&0xF000)>>4))&0xfff)
 
 typedef union _nvc_svm_cr_intercept
 {
@@ -142,11 +142,25 @@ typedef union _nvc_svm_instruction_intercept2
 		u16 intercept_mwait:1;				// Bit	11
 		u16 intercept_mwait_c:1;			// Bit	12
 		u16 intercept_xsetbv:1;				// Bit	13
-		u16 reserved1:1;					// Bit	14
+		u16 intercept_rdpru:1;				// Bit	14
 		u16 intercept_post_efer_write:1;	// Bit	15
 	};
 	u16 value;
 }nvc_svm_instruction_intercept2,*nvc_svm_instruction_intercept2_p;
+
+typedef union _nvc_svm_instruction_interception3
+{
+	struct
+	{
+		u32 intercept_invlpgb:1;			// Bit	0
+		u32 intercept_illegal_invlpgb:1;	// Bit	1
+		u32 intercept_pcid:1;				// Bit	2
+		u32 intercept_mcommit:1;			// Bit	3
+		u32 intercept_tlbsync:1;			// Bit	4
+		u32 reserved2:27;					// Bits	5-31
+	};
+	u32 value;
+}nvc_svm_instruction_interception3,*nvc_svm_instruction_intercept3_p;
 
 #define nvc_svm_tlb_control_do_nothing			0
 #define nvc_svm_tlb_control_flush_entire		1
@@ -204,9 +218,11 @@ typedef union _nvc_svm_npt_control
 		u64 enable_sev:1;
 		u64 enable_sev_es:1;
 		u64 gmet:1;
-		u64 reserved1:1;
+		u64 enable_sss_check:1;
 		u64 virtual_transparent_encryption:1;
-		u64 reserved2:58;
+		u64 reserved1:1;
+		u64 enable_invlpgb_tlbsync:1;
+		u64 reserved2:56;
 	};
 	u64 value;
 }nvc_svm_npt_control,*nvc_svm_npt_control_p;
@@ -253,3 +269,4 @@ typedef union _nvc_svm_avic_physical_table
 #define noir_svm_clean_cr2				9
 #define noir_svm_clean_lbr				10
 #define noir_svm_clean_avic				11
+#define noir_svm_clean_cet				12

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic Exit Handler of SVM Driver.
 
@@ -19,7 +19,6 @@
 #include <nv_intrin.h>
 #include <amd64.h>
 #include <ci.h>
-#include "svm_cpuid.h"
 #include "svm_vmcb.h"
 #include "svm_npt.h"
 #include "svm_exit.h"
@@ -28,7 +27,7 @@
 // Unexpected VM-Exit occured. You may want to debug your code if this function is invoked.
 void static fastcall nvc_svm_default_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
-	void* vmcb=vcpu->vmcb.virt;
+	const void* vmcb=vcpu->vmcb.virt;
 	i32 code=noir_svm_vmread32(vmcb,exit_code);
 	/*
 	  Following conditions might cause the default handler to be invoked:
@@ -47,7 +46,7 @@ void static fastcall nvc_svm_default_handler(noir_gpr_state_p gpr_state,noir_svm
 // Expected Intercept Code: -1
 void static fastcall nvc_svm_invalid_guest_state(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
-	void* vmcb=vcpu->vmcb.virt;
+	const void* vmcb=vcpu->vmcb.virt;
 	u64 efer;
 	ulong_ptr cr0,cr3,cr4;
 	ulong_ptr dr6,dr7;
@@ -73,99 +72,101 @@ void static fastcall nvc_svm_invalid_guest_state(noir_gpr_state_p gpr_state,noir
 	noir_int3();
 }
 
+// Hypervisor-Present CPUID Handler
+void static fastcall nvc_svm_cpuid_hvp_handler(u32 leaf,u32 subleaf,noir_cpuid_general_info_p info)
+{
+	// First, classify the leaf function.
+	u32 leaf_class=noir_cpuid_class(leaf);
+	u32 leaf_func=noir_cpuid_index(leaf);
+	if(leaf_class==hvm_leaf_index)
+	{
+		if(leaf_func<hvm_p->relative_hvm->hvm_cpuid_leaf_max)
+			hvm_cpuid_handlers[leaf_func](info);
+		else
+			noir_stosd((u32*)&info,0,4);
+	}
+	else
+	{
+		noir_cpuid(leaf,subleaf,&info->eax,&info->ebx,&info->ecx,&info->edx);
+		switch(leaf)
+		{
+			case amd64_cpuid_std_proc_feature:
+			{
+				noir_bts(&info->ecx,amd64_cpuid_hv_presence);
+				break;
+			}
+			case amd64_cpuid_ext_proc_feature:
+			{
+				noir_btr(&info->ecx,amd64_cpuid_svm);
+				break;
+			}
+			case amd64_cpuid_ext_svm_features:
+			{
+				noir_stosd((u32*)&info,0,4);
+				break;
+			}
+			case amd64_cpuid_ext_mem_crypting:
+			{
+				noir_stosd((u32*)&info,0,4);
+				break;
+			}
+		}
+	}
+}
+
+// Hypervisor-Stealthy CPUID Handler
+void static fastcall nvc_svm_cpuid_hvs_handler(u32 leaf,u32 subleaf,noir_cpuid_general_info_p info)
+{
+	noir_cpuid(leaf,subleaf,&info->eax,&info->ebx,&info->ecx,&info->edx);
+	switch(leaf)
+	{
+		case amd64_cpuid_ext_proc_feature:
+		{
+			noir_btr(&info->ecx,amd64_cpuid_svm);
+			break;
+		}
+		case amd64_cpuid_ext_svm_features:
+		{
+			noir_stosd((u32*)&info,0,4);
+			break;
+		}
+		case amd64_cpuid_ext_mem_crypting:
+		{
+			noir_stosd((u32*)&info,0,4);
+			break;
+		}
+	}
+}
+
 // Expected Intercept Code: 0x72
 void static fastcall nvc_svm_cpuid_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
 	u32 ia=(u32)gpr_state->rax;
 	u32 ic=(u32)gpr_state->rcx;
-	// First, classify the leaf function.
-	u32 leaf_class=noir_cpuid_class(ia);
-	u32 leaf_func=noir_cpuid_index(ia);
-	nv_dprintf("CPUID instruction is intercepted! EAX=0x%X\t ECX=0x%X\n",ia,ic);
-	if(vcpu->enabled_feature & noir_svm_cpuid_caching)
-	{
-		// Here, we implement the cpuid cache to improve performance on nested VM scenario.
-		// Second, filter invalid leaves, and invoke these valid.
-		if(vcpu->cpuid_cache.max_leaf[leaf_class]>=leaf_func)
-			svm_cpuid_handlers[leaf_class][leaf_func](gpr_state,vcpu);	// Invoke if valid.
-		else
-			nvc_svm_reserved_cpuid_handler(gpr_state,vcpu);
-	}
-	else
-	{
-		// We disabled caching, so use cpuid instruction.
-		noir_cpuid(ia,ic,(u32*)&gpr_state->rax,(u32*)&gpr_state->rbx,(u32*)&gpr_state->rcx,(u32*)&gpr_state->rdx);
-		switch(leaf_class)
-		{
-			case std_leaf_index:
-			{
-				if(leaf_func==std_proc_feature)
-					noir_bts((u32*)&gpr_state->rcx,amd64_cpuid_hv_presence);
-				break;
-			}
-			case hvm_leaf_index:
-			{
-				if(leaf_func==hvm_max_num_vstr)
-				{
-					*(u32*)&gpr_state->rax=0x40000001;
-					*(u32*)&gpr_state->rbx='rioN';
-					*(u32*)&gpr_state->rcx='osiV';
-					*(u32*)&gpr_state->rdx='TZ r';
-				}
-				else if(leaf_func==hvm_interface_id)
-				{
-					*(u32*)&gpr_state->rax='0#vH';
-					*(u32*)&gpr_state->rbx=0;
-					*(u32*)&gpr_state->rcx=0;
-					*(u32*)&gpr_state->rdx=0;
-				}
-				break;
-			}
-			case ext_leaf_index:
-			{
-				if(leaf_func==ext_proc_feature)
-					noir_btr((u32*)&gpr_state->rcx,amd64_cpuid_svm);
-				break;
-			}
-		}
-	}
+	noir_cpuid_general_info info;
+	nvcp_svm_cpuid_handler(ia,ic,&info);
+	*(u32*)&gpr_state->rax=info.eax;
+	*(u32*)&gpr_state->rbx=info.ebx;
+	*(u32*)&gpr_state->rcx=info.ecx;
+	*(u32*)&gpr_state->rdx=info.edx;
 	// Finally, advance the instruction pointer.
 	noir_svm_advance_rip(vcpu->vmcb.virt);
 }
 
-// Expected Intercept Code: 0x7C
-void static fastcall nvc_svm_msr_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+// This is a branch of MSR-Exit. DO NOT ADVANCE RIP HERE!
+void static fastcall nvc_svm_rdmsr_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
 	void* vmcb=vcpu->vmcb.virt;
 	// The index of MSR is saved in ecx register (32-bit).
 	u32 index=(u32)gpr_state->rcx;
-	// Determine the type of operation.
-	bool op_write=noir_svm_vmread8(vmcb,exit_info1);
 	large_integer val={0};
-	// 
-	if(op_write)
+	if(noir_is_synthetic_msr(index))
 	{
-		// Get the value to be written.
-		val.low=(u32)gpr_state->rax;
-		val.high=(u32)gpr_state->rdx;
-		switch(index)
-		{
-			case amd64_efer:
-			{
-				// This is for future feature of nested virtualization.
-				vcpu->nested_hvm.svme=noir_bt(&val.low,amd64_efer_svme);
-				val.value|=amd64_efer_svme_bit;
-				// Other bits can be ignored, but SVME should be always protected.
-				noir_svm_vmwrite64(vmcb,guest_efer,val.value);
-				break;
-			}
-			case amd64_hsave_pa:
-			{
-				// Store the physical address of Host-Save Area to nested HVM structure.
-				vcpu->nested_hvm.hsave_gpa=val.value;
-				break;
-			}
-		}
+		if(hvm_p->options.cpuid_hv_presence)
+			val.value=nvc_mshv_rdmsr_handler(index);
+		else
+			// Synthetic MSR is not allowed, inject #GP to Guest.
+			noir_svm_inject_event(vmcb,amd64_general_protection,amd64_fault_trap_exception,true,true,0);
 	}
 	else
 	{
@@ -176,7 +177,7 @@ void static fastcall nvc_svm_msr_handler(noir_gpr_state_p gpr_state,noir_svm_vcp
 				// Read the EFER value from VMCB.
 				val.value=noir_svm_vmread64(vmcb,guest_efer);
 				// The SVME bit should be filtered.
-				val.value&=(vcpu->nested_hvm.svme<<amd64_efer_svme);
+				if(vcpu->nested_hvm.svme==0)val.value&=~amd64_efer_svme_bit;
 				break;
 			}
 			case amd64_hsave_pa:
@@ -189,29 +190,124 @@ void static fastcall nvc_svm_msr_handler(noir_gpr_state_p gpr_state,noir_svm_vcp
 #if defined(_amd64)
 			case amd64_lstar:
 			{
-				val.value=(u64)orig_system_call;
+				val.value=vcpu->virtual_msr.lstar;
 				break;
 			}
 #else
 			case amd64_sysenter_eip:
 			{
-				val.value=(u64)orig_system_call;
+				val.value=vcpu->virtual_msr.sysenter_eip;
 				break;
 			}
 #endif
 		}
-		*(u32*)&gpr_state->rax=val.low;
-		*(u32*)&gpr_state->rdx=val.high;
 	}
+	// Higher 32 bits of rax and rdx will be cleared.
+	gpr_state->rax=(ulong_ptr)val.low;
+	gpr_state->rdx=(ulong_ptr)val.high;
+}
+
+// This is a branch of MSR-Exit. DO NOT ADVANCE RIP HERE!
+void static fastcall nvc_svm_wrmsr_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	void* vmcb=vcpu->vmcb.virt;
+	// The index of MSR is saved in ecx register (32-bit).
+	u32 index=(u32)gpr_state->rcx;
+	large_integer val;
+	// Get the value to be written.
+	val.low=(u32)gpr_state->rax;
+	val.high=(u32)gpr_state->rdx;
+	if(noir_is_synthetic_msr(index))
+	{
+		if(hvm_p->options.cpuid_hv_presence)
+			nvc_mshv_wrmsr_handler(index,val.value);
+		else
+			// Synthetic MSR is not allowed, inject #GP to Guest.
+			noir_svm_inject_event(vmcb,amd64_general_protection,amd64_fault_trap_exception,true,true,0);
+	}
+	else
+	{
+		switch(index)
+		{
+			case amd64_efer:
+			{
+				// This is for future feature of nested virtualization.
+				vcpu->nested_hvm.svme=noir_bt(&val.low,amd64_efer_svme);
+				val.value|=amd64_efer_svme_bit;
+				// Other bits can be ignored, but SVME should be always protected.
+				noir_svm_vmwrite64(vmcb,guest_efer,val.value);
+				// We updated EFER. Therefore, CRx fields should be invalidated.
+				noir_svm_vmcb_btr32(vmcb,vmcb_clean_bits,noir_svm_clean_control_reg);
+				break;
+			}
+			case amd64_hsave_pa:
+			{
+				// Store the physical address of Host-Save Area to nested HVM structure.
+				vcpu->nested_hvm.hsave_gpa=val.value;
+				break;
+			}
+#if defined(_amd64)
+			case amd64_lstar:
+			{
+				vcpu->virtual_msr.lstar=val.value;
+				break;
+			}
+#else
+			case amd64_sysenter_eip:
+			{
+				vcpu->virtual_msr.sysenter_eip=val.value;
+				break;
+			}
+#endif
+		}
+	}
+}
+
+// Expected Intercept Code: 0x7C
+void static fastcall nvc_svm_msr_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	const void* vmcb=vcpu->vmcb.virt;
+	// Determine the type of operation.
+	bool op_write=noir_svm_vmread8(vmcb,exit_info1);
+	// 
+	if(op_write)
+		nvc_svm_wrmsr_handler(gpr_state,vcpu);
+	else
+		nvc_svm_rdmsr_handler(gpr_state,vcpu);
 	noir_svm_advance_rip(vcpu->vmcb.virt);
+}
+
+// Expected Intercept Code: 0x7F
+// If this VM-Exit occurs, it may indicate a triple fault.
+void static fastcall nvc_svm_shutdown_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	nv_dprintf("Shutdown is Intercepted!\n");
+	noir_int3();
 }
 
 // Expected Intercept Code: 0x80
 // This is the cornerstone of nesting virtualization.
 void static fastcall nvc_svm_vmrun_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
-	nv_dprintf("VM-Exit occured by vmrun instruction!\n");
-	nv_dprintf("Nested Virtualization of SVM is not supported!\n");
+	void* vmcb=vcpu->vmcb.virt;
+	if(vcpu->nested_hvm.svme)
+	{
+		// Get the Nested VMCB.
+		const ulong_ptr nested_vmcb_pa=gpr_state->rax;
+		const void* nested_vmcb=noir_find_virt_by_phys(nested_vmcb_pa);
+		// Some essential information for hypervisor-specific consistency check.
+		const u32 nested_asid=noir_svm_vmread32(nested_vmcb,guest_asid);
+		if(nested_asid==0)noir_int3();		// FIXME: Issue VM-Exit for invalid state.
+		nv_dprintf("VM-Exit occured by vmrun instruction!\n");
+			nv_dprintf("Nested Virtualization of SVM is not supported!\n");
+		// There is absolutely no SVM instructions since we don't support nested virtualization at this point.
+		noir_svm_advance_rip(vcpu->vmcb.virt);
+	}
+	else
+	{
+		// SVM is disabled in guest EFER. Inject #UD to guest.
+		noir_svm_inject_event(vmcb,amd64_invalid_opcode,amd64_fault_trap_exception,false,true,0);
+	}
 }
 
 // Expected Intercept Code: 0x81
@@ -249,6 +345,7 @@ void static fastcall nvc_svm_vmmcall_handler(noir_gpr_state_p gpr_state,noir_svm
 				vcpu->status=noir_virt_trans;
 				// Return to the caller at Host Mode.
 				nvc_svm_return(saved_state);
+				// Never reaches here.
 			}
 			// If execution goes here, then the invoker is malicious.
 			nv_dprintf("Malicious call of exit!\n");
@@ -263,19 +360,159 @@ void static fastcall nvc_svm_vmmcall_handler(noir_gpr_state_p gpr_state,noir_svm
 	noir_svm_advance_rip(vcpu->vmcb.virt);
 }
 
+// Expected Intercept Code: 0x82
+void static fastcall nvc_svm_vmload_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	void* vmcb=vcpu->vmcb.virt;
+	if(vcpu->nested_hvm.svme)
+	{
+		// Get Address of Nested VMCB.
+		const ulong_ptr nested_vmcb_pa=gpr_state->rax;
+		void* nested_vmcb=noir_find_virt_by_phys(nested_vmcb_pa);
+		// Load to Current VMCB - FS.
+		noir_svm_vmwrite16(vmcb,guest_fs_selector,noir_svm_vmread16(nested_vmcb,guest_fs_selector));
+		noir_svm_vmwrite16(vmcb,guest_fs_attrib,noir_svm_vmread16(nested_vmcb,guest_fs_attrib));
+		noir_svm_vmwrite32(vmcb,guest_fs_limit,noir_svm_vmread32(nested_vmcb,guest_fs_limit));
+		noir_svm_vmwrite64(vmcb,guest_fs_base,noir_svm_vmread64(nested_vmcb,guest_fs_base));
+		// Load to Current VMCB - GS.
+		noir_svm_vmwrite16(vmcb,guest_gs_selector,noir_svm_vmread16(nested_vmcb,guest_gs_selector));
+		noir_svm_vmwrite16(vmcb,guest_gs_attrib,noir_svm_vmread16(nested_vmcb,guest_gs_attrib));
+		noir_svm_vmwrite32(vmcb,guest_gs_limit,noir_svm_vmread32(nested_vmcb,guest_gs_limit));
+		noir_svm_vmwrite64(vmcb,guest_gs_base,noir_svm_vmread64(nested_vmcb,guest_gs_base));
+		// Load to Current VMCB - TR.
+		noir_svm_vmwrite16(vmcb,guest_tr_selector,noir_svm_vmread16(nested_vmcb,guest_tr_selector));
+		noir_svm_vmwrite16(vmcb,guest_tr_attrib,noir_svm_vmread16(nested_vmcb,guest_tr_attrib));
+		noir_svm_vmwrite32(vmcb,guest_tr_limit,noir_svm_vmread32(nested_vmcb,guest_tr_limit));
+		noir_svm_vmwrite64(vmcb,guest_tr_base,noir_svm_vmread64(nested_vmcb,guest_tr_base));
+		// Load to Current VMCB - LDTR.
+		noir_svm_vmwrite16(vmcb,guest_ldtr_selector,noir_svm_vmread16(nested_vmcb,guest_ldtr_selector));
+		noir_svm_vmwrite16(vmcb,guest_ldtr_attrib,noir_svm_vmread16(nested_vmcb,guest_ldtr_attrib));
+		noir_svm_vmwrite32(vmcb,guest_ldtr_limit,noir_svm_vmread32(nested_vmcb,guest_ldtr_limit));
+		noir_svm_vmwrite64(vmcb,guest_ldtr_base,noir_svm_vmread64(nested_vmcb,guest_ldtr_base));
+		// Load to Current VMCB - MSR.
+		noir_svm_vmwrite64(vmcb,guest_sysenter_cs,noir_svm_vmread64(nested_vmcb,guest_sysenter_cs));
+		noir_svm_vmwrite64(vmcb,guest_sysenter_esp,noir_svm_vmread64(nested_vmcb,guest_sysenter_esp));
+		noir_svm_vmwrite64(vmcb,guest_sysenter_eip,noir_svm_vmread64(nested_vmcb,guest_sysenter_eip));
+		noir_svm_vmwrite64(vmcb,guest_star,noir_svm_vmread64(nested_vmcb,guest_star));
+		noir_svm_vmwrite64(vmcb,guest_lstar,noir_svm_vmread64(nested_vmcb,guest_lstar));
+		noir_svm_vmwrite64(vmcb,guest_cstar,noir_svm_vmread64(nested_vmcb,guest_cstar));
+		noir_svm_vmwrite64(vmcb,guest_sfmask,noir_svm_vmread64(nested_vmcb,guest_sfmask));
+		noir_svm_vmwrite64(vmcb,guest_kernel_gs_base,noir_svm_vmread64(nested_vmcb,guest_kernel_gs_base));
+		// Everything are loaded to Current VMCB. Return to guest.
+		noir_svm_advance_rip(vcpu->vmcb.virt);
+	}
+	else
+	{
+		// SVM is disabled in guest EFER, inject #UD.
+		noir_svm_inject_event(vmcb,amd64_invalid_opcode,amd64_fault_trap_exception,false,true,0);
+	}
+}
+
+// Expected Intercept Code: 0x83
+void static fastcall nvc_svm_vmsave_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	void* vmcb=vcpu->vmcb.virt;
+	if(vcpu->nested_hvm.svme)
+	{
+		// Get Address of Nested VMCB.
+		const ulong_ptr nested_vmcb_pa=gpr_state->rax;
+		void* nested_vmcb=noir_find_virt_by_phys(nested_vmcb_pa);
+		// Save to Nested VMCB - FS.
+		noir_svm_vmwrite16(nested_vmcb,guest_fs_selector,noir_svm_vmread16(vmcb,guest_fs_selector));
+		noir_svm_vmwrite16(nested_vmcb,guest_fs_attrib,noir_svm_vmread16(vmcb,guest_fs_attrib));
+		noir_svm_vmwrite32(nested_vmcb,guest_fs_limit,noir_svm_vmread32(vmcb,guest_fs_limit));
+		noir_svm_vmwrite64(nested_vmcb,guest_fs_base,noir_svm_vmread64(vmcb,guest_fs_base));
+		// Save to Nested VMCB - GS.
+		noir_svm_vmwrite16(nested_vmcb,guest_gs_selector,noir_svm_vmread16(vmcb,guest_gs_selector));
+		noir_svm_vmwrite16(nested_vmcb,guest_gs_attrib,noir_svm_vmread16(vmcb,guest_gs_attrib));
+		noir_svm_vmwrite32(nested_vmcb,guest_gs_limit,noir_svm_vmread32(vmcb,guest_gs_limit));
+		noir_svm_vmwrite64(nested_vmcb,guest_gs_base,noir_svm_vmread64(vmcb,guest_gs_base));
+		// Save to Nested VMCB - TR.
+		noir_svm_vmwrite16(nested_vmcb,guest_tr_selector,noir_svm_vmread16(vmcb,guest_tr_selector));
+		noir_svm_vmwrite16(nested_vmcb,guest_tr_attrib,noir_svm_vmread16(vmcb,guest_tr_attrib));
+		noir_svm_vmwrite32(nested_vmcb,guest_tr_limit,noir_svm_vmread32(vmcb,guest_tr_limit));
+		noir_svm_vmwrite64(nested_vmcb,guest_tr_base,noir_svm_vmread64(vmcb,guest_tr_base));
+		// Save to Nested VMCB - LDTR.
+		noir_svm_vmwrite16(nested_vmcb,guest_ldtr_selector,noir_svm_vmread16(vmcb,guest_ldtr_selector));
+		noir_svm_vmwrite16(nested_vmcb,guest_ldtr_attrib,noir_svm_vmread16(vmcb,guest_ldtr_attrib));
+		noir_svm_vmwrite32(nested_vmcb,guest_ldtr_limit,noir_svm_vmread32(vmcb,guest_ldtr_limit));
+		noir_svm_vmwrite64(nested_vmcb,guest_ldtr_base,noir_svm_vmread64(vmcb,guest_ldtr_base));
+		// Save to Nested VMCB - MSR.
+		noir_svm_vmwrite64(nested_vmcb,guest_sysenter_cs,noir_svm_vmread64(vmcb,guest_sysenter_cs));
+		noir_svm_vmwrite64(nested_vmcb,guest_sysenter_esp,noir_svm_vmread64(vmcb,guest_sysenter_esp));
+		noir_svm_vmwrite64(nested_vmcb,guest_sysenter_eip,noir_svm_vmread64(vmcb,guest_sysenter_eip));
+		noir_svm_vmwrite64(nested_vmcb,guest_star,noir_svm_vmread64(vmcb,guest_star));
+		noir_svm_vmwrite64(nested_vmcb,guest_lstar,noir_svm_vmread64(vmcb,guest_lstar));
+		noir_svm_vmwrite64(nested_vmcb,guest_cstar,noir_svm_vmread64(vmcb,guest_cstar));
+		noir_svm_vmwrite64(nested_vmcb,guest_sfmask,noir_svm_vmread64(vmcb,guest_sfmask));
+		noir_svm_vmwrite64(nested_vmcb,guest_kernel_gs_base,noir_svm_vmread64(vmcb,guest_kernel_gs_base));
+		// Everything are saved to Nested VMCB. Return to guest.
+		noir_svm_advance_rip(vcpu->vmcb.virt);
+	}
+	else
+	{
+		// SVM is disabled in guest EFER, inject #UD.
+		noir_svm_inject_event(vmcb,amd64_invalid_opcode,amd64_fault_trap_exception,false,true,0);
+	}
+}
+
+// Expected Intercept Code: 0x84
+void static fastcall nvc_svm_stgi_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	void* vmcb=vcpu->vmcb.virt;
+	if(vcpu->nested_hvm.svme)
+	{
+		vcpu->nested_hvm.gif=1;		// Marks that GIF is set in Guest.
+		// FIXME: Inject pending interrupts held due to cleared GIF, and clear interceptions on certain interrupts.
+		noir_svm_advance_rip(vcpu->vmcb.virt);
+	}
+	else
+	{
+		// SVM is disabled in guest EFER, inject #UD.
+		noir_svm_inject_event(vmcb,amd64_invalid_opcode,amd64_fault_trap_exception,false,true,0);
+	}
+}
+
+// Expected Intercept Code: 0x85
+void static fastcall nvc_svm_clgi_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	void* vmcb=vcpu->vmcb.virt;
+	if(vcpu->nested_hvm.svme)
+	{
+		vcpu->nested_hvm.gif=0;		// Marks that GIF is reset in Guest.
+		// FIXME: Setup interceptions on certain interrupts.
+		noir_svm_advance_rip(vcpu->vmcb.virt);
+	}
+	else
+	{
+		// SVM is disabled in guest EFER, inject #UD.
+		noir_svm_inject_event(vmcb,amd64_invalid_opcode,amd64_fault_trap_exception,false,true,0);
+	}
+}
+
+// Expected Intercept Code: 0x86
+void static fastcall nvc_svm_skinit_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+{
+	void* vmcb=vcpu->vmcb.virt;
+	// No skinit support in NoirVisor Guest.
+	noir_svm_inject_event(vmcb,amd64_invalid_opcode,amd64_fault_trap_exception,false,true,0);
+}
+
 // Expected Intercept Code: 0x400
 // Do not output to debugger since this may seriously degrade performance.
 void static fastcall nvc_svm_nested_pf_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
 {
 	bool advance=true;
-	i32 lo=0,hi=noir_hook_pages_count;
 	// Necessary Information for #NPF VM-Exit.
-	u64 gpa=noir_svm_vmread64(vcpu->vmcb.virt,exit_info2);
 	amd64_npt_fault_code fault;
 	fault.value=noir_svm_vmread64(vcpu->vmcb.virt,exit_info1);
+#if !defined(_hv_type1)
 	if(fault.execute)
 	{
+		i32 lo=0,hi=noir_hook_pages_count;
+		u64 gpa=noir_svm_vmread64(vcpu->vmcb.virt,exit_info2);
 		// Check if we should switch to secondary.
+		// Use binary search to reduce searching time complexity.
 		while(hi>=lo)
 		{
 			i32 mid=(lo+hi)>>1;
@@ -303,38 +540,32 @@ void static fastcall nvc_svm_nested_pf_handler(noir_gpr_state_p gpr_state,noir_s
 		// We switched NPT. Thus we should clean VMCB cache state.
 		noir_btr((u32*)((ulong_ptr)vcpu->vmcb.virt+vmcb_clean_bits),noir_svm_clean_npt);
 		// It is necessary to flush TLB.
-		noir_svm_vmwrite32(vcpu->vmcb.virt,tlb_control,nvc_svm_tlb_control_flush_guest);
+		noir_svm_vmwrite8(vcpu->vmcb.virt,tlb_control,nvc_svm_tlb_control_flush_entire);
 	}
-	/*
-	  There are three inspections in #NPF handler of NoirVisor.
-	  Inspection I:		Stealth Inline Hook Concealment
-	  Inspection II:	Real-Time Code Integrity Enforcement
-	  Inspection III:	Critical Hypervisor Protection
-	  
-	  We simply have to make inspection I.
-	  Inspection II & III does not matter as we initialized
-	  the "advance" variable to true.
-	*/
-	// Fix ME: Complete the Inspection I - Stealth Inline Hook.
-	// Inspection I completed...
+#endif
 	if(advance)
 	{
 		// Note that SVM won't save the next rip in #NPF.
 		// Hence we should advance rip by software analysis.
+		// Usually, if #NPF handler goes here, it might be induced by Hardware-Enforced CI.
+		// In this regard, we assume this instruction is writing protected page.
 		void* instruction=(void*)((ulong_ptr)vcpu->vmcb.virt+guest_instruction_bytes);
 		// Determine Long-Mode through CS.L bit.
 		u16* cs_attrib=(u16*)((ulong_ptr)vcpu->vmcb.virt+guest_cs_attrib);
 		u32 increment=noir_get_instruction_length(instruction,noir_bt(cs_attrib,9));
+		// Just increment the rip. Don't emulate a read/write for guest.
 		ulong_ptr gip=noir_svm_vmread(vcpu->vmcb.virt,guest_rip);
 		gip+=increment;
 		noir_svm_vmwrite(vcpu->vmcb.virt,guest_rip,gip);
 	}
 }
 
-void fastcall nvc_svm_exit_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu)
+void fastcall nvc_svm_exit_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vcpu,u64 tsc_at_exit)
 {
 	// Get the linear address of VMCB.
-	void* vmcb_va=vcpu->vmcb.virt;
+	const void* vmcb_va=vcpu->vmcb.virt;
+	// Tick-Profiling countering.
+	u64 tc=noir_svm_vmread64(vmcb_va,tsc_offset);
 	// Read the Intercept Code.
 	i32 intercept_code=noir_svm_vmread32(vmcb_va,exit_code);
 	// Determine the group and number of interception.
@@ -349,7 +580,7 @@ void fastcall nvc_svm_exit_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vc
 	noir_svm_vmwrite32(vmcb_va,tlb_control,nvc_svm_tlb_control_do_nothing);
 	// Check if the interception is due to invalid guest state.
 	// Invoke the handler accordingly.
-	if(intercept_code==-1)
+	if(unlikely(intercept_code==-1))		// Rare circumstance.
 		nvc_svm_invalid_guest_state(gpr_state,vcpu);
 	else
 		svm_exit_handlers[code_group][code_num](gpr_state,vcpu);
@@ -358,8 +589,10 @@ void fastcall nvc_svm_exit_handler(noir_gpr_state_p gpr_state,noir_svm_vcpu_p vc
 	// The rax in GPR state should be the physical address of VMCB
 	// in order to execute the vmrun instruction properly.
 	gpr_state->rax=(ulong_ptr)vcpu->vmcb.phys;
-	// After VM-Exit, Global Interrupt is always disabled. So enable it before vmrun.
-	noir_svm_stgi();
+	noir_svm_vmload((ulong_ptr)vcpu->vmcb.phys);
+	// Tick-Profiling countering.
+	tc-=(noir_rdtsc()-tsc_at_exit+noir_svm_tsc_asm_offset);
+	noir_svm_vmwrite64(vmcb_va,tsc_offset,tc);
 }
 
 bool nvc_svm_build_exit_handler()
@@ -391,9 +624,20 @@ bool nvc_svm_build_exit_handler()
 		// Setup Exit-Handlers
 		svm_exit_handlers[0][intercepted_cpuid]=nvc_svm_cpuid_handler;
 		svm_exit_handlers[0][intercepted_msr]=nvc_svm_msr_handler;
+		svm_exit_handlers[0][intercepted_shutdown]=nvc_svm_shutdown_handler;
 		svm_exit_handlers[0][intercepted_vmrun]=nvc_svm_vmrun_handler;
 		svm_exit_handlers[0][intercepted_vmmcall]=nvc_svm_vmmcall_handler;
+		svm_exit_handlers[0][intercepted_vmload]=nvc_svm_vmload_handler;
+		svm_exit_handlers[0][intercepted_vmsave]=nvc_svm_vmsave_handler;
+		svm_exit_handlers[0][intercepted_stgi]=nvc_svm_stgi_handler;
+		svm_exit_handlers[0][intercepted_clgi]=nvc_svm_clgi_handler;
+		svm_exit_handlers[0][intercepted_skinit]=nvc_svm_skinit_handler;
 		svm_exit_handlers[1][nested_page_fault-0x400]=nvc_svm_nested_pf_handler;
+		// Special CPUID-Handler
+		if(hvm_p->options.cpuid_hv_presence)
+			nvcp_svm_cpuid_handler=nvc_svm_cpuid_hvp_handler;
+		else
+			nvcp_svm_cpuid_handler=nvc_svm_cpuid_hvs_handler;
 		return true;
 	}
 	return false;

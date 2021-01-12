@@ -1,6 +1,6 @@
 ; NoirVisor - Hardware-Accelerated Hypervisor solution
 ; 
-; Copyright 2018-2020, Zero Tang. All rights reserved.
+; Copyright 2018-2021, Zero Tang. All rights reserved.
 ;
 ; This file defines codes for MSR-Hook.
 ;
@@ -12,7 +12,7 @@
 
 ifdef _ia32
 .686p
-.model flat
+.model flat,stdcall
 endif
 
 .code
@@ -25,10 +25,8 @@ ifdef _amd64
 
 noir_system_call proc
 
-	pushfq								; Following code would destroy RFlags, so save it
 	cmp eax,IndexOf_NtOpenProcess		; If the syscall index is hooked,
 	je AsmHook_NtOpenProcess			; Then jump to our proxy function
-	popfq								; Restore RFlags
 	jmp orig_system_call				; Continue to KiSystemCall64
 
 noir_system_call endp
@@ -48,7 +46,6 @@ AsmHook_NtOpenProcess proc
 	xor rdx,rdx					; Clear DesiredAccess (No Access) if the PID is protected
 Final:
 	pop rax						; Restore rax register
-	popfq						; Restore RFlags
 	jmp orig_system_call		; Continue to KiSystemCall64
 
 AsmHook_NtOpenProcess endp

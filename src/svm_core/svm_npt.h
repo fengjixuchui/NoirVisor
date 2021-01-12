@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic driver of Intel EPT.
 
@@ -203,5 +203,7 @@ typedef union _amd64_npt_fault_code
 bool nvc_npt_protect_critical_hypervisor(noir_hypervisor_p hvm);
 bool nvc_npt_initialize_ci(noir_npt_manager_p nptm);
 noir_npt_manager_p nvc_npt_build_identity_map();
+bool nvc_npt_update_pde(noir_npt_manager_p nptm,u64 hpa,bool r,bool w,bool x);
 void nvc_npt_build_hook_mapping(noir_hypervisor_p hvm);
 void nvc_npt_cleanup(noir_npt_manager_p nptm);
+u32 nvc_npt_get_allocation_size();

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic driver of Intel EPT.
 
@@ -24,10 +24,10 @@
 #include "vt_ept.h"
 #include "vt_def.h"
 
+#if !defined(_hv_type1)
 bool nvc_ept_insert_pte(noir_ept_manager_p eptm,noir_hook_page_p nhp)
 {
-	u32 h=0;
-	for(;h<noir_hook_pages_count;h++)
+	for(u32 h=0;h<noir_hook_pages_count;h++)
 	{
 		noir_ept_pte_descriptor_p cur_d=eptm->pte.head;
 		ia32_addr_translator addr;
@@ -89,6 +89,7 @@ bool nvc_ept_insert_pte(noir_ept_manager_p eptm,noir_hook_page_p nhp)
 	}
 	return true;
 }
+#endif
 
 void nvc_ept_cleanup(noir_ept_manager_p eptm)
 {
@@ -103,14 +104,16 @@ void nvc_ept_cleanup(noir_ept_manager_p eptm)
 		if(eptm->pte.head)
 		{
 			noir_ept_pte_descriptor_p cur=eptm->pte.head;
-			while(cur)
+			do
 			{
 				noir_ept_pte_descriptor_p next=cur->next;
 				noir_free_contd_memory(cur->virt);
 				noir_free_nonpg_memory(cur);
 				cur=next;
-			}
+			}while(cur);
 		}
+		if(eptm->blank_page.virt)
+			noir_free_contd_memory(eptm->blank_page.virt);
 		noir_free_nonpg_memory(eptm);
 	}
 }
@@ -194,8 +197,7 @@ bool nvc_ept_update_pte(noir_ept_manager_p eptm,u64 hpa,u64 gpa,bool r,bool w,bo
 bool nvc_ept_initialize_ci(noir_ept_manager_p eptm)
 {
 	bool r=true;
-	u32 i=0;
-	for(;i<noir_ci->pages;i++)
+	for(u32 i=0;i<noir_ci->pages;i++)
 	{
 		u64 phys=noir_ci->page_ci[i].phys;
 		r&=nvc_ept_update_pte(eptm,phys,phys,true,false,true);
@@ -223,14 +225,13 @@ bool nvc_ept_protect_hypervisor(noir_hypervisor_p hvm,noir_ept_manager_p eptm)
 	if(eptm->blank_page.virt)
 	{
 		bool result=true;
-		u32 i=0;
 		eptm->blank_page.phys=noir_get_physical_address(eptm->blank_page.virt);
 		// Protect MSR, I/O bitmap, and MSR Auto List.
 		result&=nvc_ept_update_pte(eptm,hvm->relative_hvm->msr_bitmap.phys,eptm->blank_page.phys,true,true,true);
 		// nvc_ept_update_pte(eptm,hvm->relative_hvm->io_bitmap_a.phys,eptm->blank_page.phys,true,true,true);
 		// nvc_ept_update_pte(eptm,hvm->relative_hvm->io_bitmap_b.phys,eptm->blank_page.phys,true,true,true);
 		result&=nvc_ept_update_pte(eptm,hvm->relative_hvm->msr_auto_list.phys,eptm->blank_page.phys,true,true,true);
-		for(;i<hvm->cpu_count;i++)
+		for(u32 i=0;i<hvm->cpu_count;i++)
 		{
 			noir_vt_vcpu_p vcpu=&hvm->virtual_cpu[i];
 			noir_ept_manager_p eptmt=(noir_ept_manager_p)vcpu->ept_manager;
@@ -292,11 +293,9 @@ noir_ept_manager_p nvc_ept_build_identity_map()
 	}
 	if(alloc_success)
 	{
-		u32 i=0;
-		for(;i<512;i++)
+		for(u32 i=0;i<512;i++)
 		{
-			u32 j=0;
-			for(;j<512;j++)
+			for(u32 j=0;j<512;j++)
 			{
 				const u32 k=(i<<9)+j;
 				// Build Page-Directory Entries (PDEs)
@@ -315,8 +314,11 @@ noir_ept_manager_p nvc_ept_build_identity_map()
 			eptm->pdpt.virt[i].write=1;
 			eptm->pdpt.virt[i].execute=1;
 		}
-		if(nvc_ept_insert_pte(eptm,noir_hook_pages)==false)
-			goto alloc_failure;
+#if !defined(_hv_type1)
+		if(hvm_p->options.stealth_inline_hook)
+			if(nvc_ept_insert_pte(eptm,noir_hook_pages)==false)
+				goto alloc_failure;
+#endif
 		if(nvc_ept_initialize_ci(eptm)==false)
 			goto alloc_failure;
 		// Build Page Map Level-4 Entry (PML4E)

@@ -35,10 +35,6 @@ In this regard, NoirVisor requires that Intel EPT should supports execution-only
 Hooked page includes the hook code, whereas the original page includes the original code. <br>
 On VM-Exit, NoirVisor should locate the hook page by GPA (Guest Physical Address) then swap the PTE entry.
 
-# CPUID Cache
-This feature could enhance the performance of CPUID-induced VM-Exit on Nested-VMM scenario. (e.g NoirVisor running in a Virtual Machine.) It might slightly lower down the performance on Non-Nested scenario, but generally should have a good performance no matter the scenario. <br>
-However, due to complexity of sub-leaf for cpuid instruction, caching architecture in NoirVisor could only accelerate scenarios under ecx=0.
-
 # Critical Hypervisor Protection
 This feature is an essential security feature. I found this feature missing in most open-source light-weight hypervisor project. The key is that VMCS and other essential pages are not protected through Intel EPT even if they enabled Intel EPT. It should be pointed out that a malware can be aware of the format of VMCS of a specific processor. In this regard, malware may corrupt the VMCS through memory access instruction.
 
@@ -135,8 +131,8 @@ Exactly, what we should do is to redirect the VPID (increment by 1).
 To virtualize EPT, we should merge the page tables. However, I don't have an algorithm regarding page-table merging. So, the VMX-nesting feature in future NoirVisor may not support EPT unless I have one.
 
 ## Utilize VMCS-Shadowing
-This feature could be a hard-point for me because by lab does not own a processor that supports this feature. The newest Intel CPU I have is the Intel Core i7-7500U, where the VMCS-Shadowing feature is unsupported. <br>
-In addition, VMware WorkStation (by now, version 15.1.0) does not emulate VMCS shadowing, even if the host machine supports it. (Tested on Intel i5-6400 CPU, a machine that does not belong to my lab) <br>
+This feature could be a hard-point for me because my lab does not own a processor that supports this feature. The newest Intel CPU I have is the Intel Core i7-7500U, where the VMCS-Shadowing feature is unsupported. <br>
+In addition, VMware WorkStation (by now, version 15.5.6) does not emulate VMCS shadowing, even if the host machine supports it. (Tested on Intel i5-6400 CPU, a machine that does not belong to my lab) <br>
 With VMCS-Shadowing, we can reduce the VM-Exits induced by vmread and vmwrite instructions.
 
 ## L2 Virtual Machine Control Structure

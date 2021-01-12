@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic development kit of NoirVisor.
   Do not include definitions related to virtualization in this header.
@@ -20,17 +20,40 @@
 #define page_2mb_size			0x200000
 #define page_1gb_size			0x40000000
 
+#define page_offset(x)			(x&0xfff)
+#define page_4kb_offset(x)		(x&0xfff)
+#define page_2mb_offset(x)		(x&0x1fffff)
+#define page_1gb_offset(x)		(x&0x3fffffff)
+
+#define page_count(x)			(x>>12)
+#define page_4kb_count(x)		(x>>12)
+#define page_2mb_count(x)		(x>>21)
+#define page_1gb_count(x)		(x>>30)
+
+#define page_mult(x)			(x<<12)
+#define page_4kb_mult(x)		(x<<12)
+#define page_2mb_mult(x)		(x<<21)
+#define page_1gb_mult(x)		(x<<30)
+
 #define selector_rplti_mask		0xfff8
 
 // Classification of CPUID Leaf
-#define noir_cpuid_class(x)		x>>30
-#define noir_cpuid_index(x)		x & 0x3FFFFFFF
+#define noir_cpuid_class(x)		(x>>30)
+#define noir_cpuid_index(x)		(x&0x3FFFFFFF)
 
 // Classes of Leaves
 #define std_leaf_index	0	// CPUID Leaf of Standard	Functions
 #define hvm_leaf_index	1	// CPUID Leaf of Hypervisor	Functions
 #define ext_leaf_index	2	// CPUID Leaf of Extended	Functions
 #define res_leaf_index	3	// CPUID Leaf of Reserved	Functions
+
+// Bases of Classes
+#define std_cpuid_base			0x00000000
+#define hvm_cpuid_base			0x40000000
+#define ext_cpuid_base			0x80000000
+
+// Synthetic MSR Macro
+#define noir_is_synthetic_msr(i)	((i>>30)==1)
 
 typedef union _large_integer
 {
@@ -50,6 +73,12 @@ typedef struct _segment_register
 	u32 limit;
 	u64 base;
 }segment_register,*segment_register_p;
+
+typedef struct _memory_descriptor
+{
+	void* virt;
+	u64 phys;
+}memory_descriptor,*memory_descriptor_p;
 
 typedef struct _noir_processor_state
 {
@@ -112,6 +141,36 @@ typedef struct _noir_gpr_state
 	u64 r15;
 #endif
 }noir_gpr_state,*noir_gpr_state_p;
+
+typedef struct _noir_xmm_state
+{
+	r128 xmm0;
+	r128 xmm1;
+	r128 xmm2;
+	r128 xmm3;
+	r128 xmm4;
+	r128 xmm5;
+	r128 xmm6;
+	r128 xmm7;
+#if defined(_amd64)
+	r128 xmm8;
+	r128 xmm9;
+	r128 xmm10;
+	r128 xmm11;
+	r128 xmm12;
+	r128 xmm13;
+	r128 xmm14;
+	r128 xmm15;
+#endif
+}noir_xmm_state,*noir_xmm_state_p;
+
+typedef struct _noir_cpuid_general_info
+{
+	u32 eax;
+	u32 ebx;
+	u32 ecx;
+	u32 edx;
+}noir_cpuid_general_info,*noir_cpuid_general_info_p;
 
 typedef void (*noir_broadcast_worker)(void* context,u32 processor_id);
 typedef i32(cdecl *noir_sorting_comparator)(const void* a,const void*b);

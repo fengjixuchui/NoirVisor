@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file defines structures and constants for VMX Driver of NoirVisor.
 
@@ -19,18 +19,15 @@
 #define noir_nvt_vmxe			0
 #define noir_nvt_vmxon			1
 
+// Constant for TSC offseting by Assembly Part.
+#define noir_vt_tsc_asm_offset		666		// To be fine tuned.
+
 // Definition of Enabled Features
 #define noir_vt_extended_paging		1		// Bit	0
 #define noir_vt_vpid_tagged_tlb		2		// Bit	1
 #define noir_vt_vmcs_shadowing		4		// Bit	2
-#define noir_vt_cpuid_caching		8		// Bit	3
-#define noir_vt_ept_with_hooks		16		// Bit	4
-
-typedef struct _memory_descriptor
-{
-	void* virt;
-	u64 phys;
-}memory_descriptor,*memory_descriptor_p;
+#define noir_vt_ept_with_hooks		8		// Bit	3
+#define noir_vt_syscall_hook		16		// Bit	4
 
 typedef struct _noir_vt_hvm
 {
@@ -38,9 +35,7 @@ typedef struct _noir_vt_hvm
 	memory_descriptor io_bitmap_a;
 	memory_descriptor io_bitmap_b;
 	memory_descriptor msr_auto_list;
-	u32 std_leaftotal;
-	u32 hvm_leaftotal;
-	u32 ext_leaftotal;
+	u32 hvm_cpuid_leaf_max;
 }noir_vt_hvm,*noir_vt_hvm_p;
 
 typedef struct _noir_vt_msr_entry
@@ -50,23 +45,12 @@ typedef struct _noir_vt_msr_entry
 	u64 value;
 }noir_vt_msr_entry,*noir_vt_msr_entry_p;
 
-typedef struct _noir_vt_cpuid_info
+typedef struct _noir_vt_virtual_msr
 {
-	u32 eax;
-	u32 ebx;
-	u32 ecx;
-	u32 edx;
-}noir_vt_cpuid_info,*noir_vt_cpuid_info_p;
-
-typedef struct _noir_vt_cached_cpuid
-{
-	void** std_leaf;		// 0x00000000 - 0x0FFFFFFF
-	void** hvm_leaf;		// 0x40000000 - 0x4FFFFFFF
-	void** ext_leaf;		// 0x80000000 - 0x8FFFFFFF
-	void** res_leaf;		// 0xC0000000 - 0xC0000000
-	void* cache_base;
-	u32 max_leaf[4];
-}noir_vt_cached_cpuid,*noir_vt_cached_cpuid_p;
+	u64 vmx_msr[0x12];
+	u64 sysenter_eip;
+	u64 lstar;
+}noir_vt_virtual_msr,*noir_vt_virtual_msr_p;
 
 typedef struct _noir_vt_nested_vcpu
 {
@@ -75,7 +59,6 @@ typedef struct _noir_vt_nested_vcpu
 	memory_descriptor vmcs_c;
 	// Abstracted-to-CPU VMCS.
 	memory_descriptor vmcs_t;
-	u64 vmx_msr[0x12];
 	u32 status;
 }noir_vt_nested_vcpu,*noir_vt_nested_vcpu_p;
 
@@ -86,21 +69,24 @@ typedef struct _noir_vt_vcpu
 	void* hv_stack;
 	noir_vt_hvm_p relative_hvm;
 	void* ept_manager;
-	noir_vt_cached_cpuid cpuid_cache;
+	noir_vt_virtual_msr virtual_msr;
 	noir_vt_nested_vcpu nested_vcpu;
+	u64 tsc_offset;
 	u8 status;
 	u8 enabled_feature;
 }noir_vt_vcpu,*noir_vt_vcpu_p;
 
+typedef struct _noir_vt_initial_stack
+{
+	noir_vt_vcpu_p vcpu;
+	u32 proc_id;
+}noir_vt_initial_stack,*noir_vt_initial_stack_p;
+
 u8 fastcall nvc_vt_subvert_processor_a(noir_vt_vcpu_p vcpu);
 noir_status nvc_vt_build_exit_handlers();
-void nvc_vt_build_cpuid_cache_per_vcpu(noir_vt_vcpu_p vcpu);
 void nvc_vt_teardown_exit_handlers();
-bool nvc_vt_build_cpuid_handler(u32 std_count,u32 hvm_count,u32 ext_count,u32 res_count);
-void nvc_vt_teardown_cpuid_handler();
-void fastcall nvc_vt_reserved_cpuid_handler(noir_gpr_state_p gpr_state,noir_vt_vcpu_p vcpu);
 void nvc_vt_resume_without_entry(noir_gpr_state_p state);
-void nvc_vt_exit_handler_a();
+void nvc_vt_exit_handler_a(void);
 void noir_vt_vmsuccess();
 void noir_vt_vmfail_invalid();
 void noir_vt_vmfail_valid();

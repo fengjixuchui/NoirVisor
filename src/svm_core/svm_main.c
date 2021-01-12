@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic driver of AMD-V.
 
@@ -112,18 +112,33 @@ void static nvc_svm_setup_msr_hook(noir_hypervisor_p hvm_p)
 	void* bitmap1=(void*)((ulong_ptr)hvm_p->relative_hvm->msrpm.virt+0);
 	void* bitmap2=(void*)((ulong_ptr)hvm_p->relative_hvm->msrpm.virt+0x800);
 	void* bitmap3=(void*)((ulong_ptr)hvm_p->relative_hvm->msrpm.virt+0x1000);
-	unref_var(bitmap1);
 	// Setup basic MSR-Intercepts that may interfere with SVM normal operations.
 	// This is also for nested virtualization.
 	noir_set_bitmap(bitmap2,svm_msrpm_bit(2,amd64_efer,0));
 	noir_set_bitmap(bitmap2,svm_msrpm_bit(2,amd64_efer,1));
 	noir_set_bitmap(bitmap3,svm_msrpm_bit(3,amd64_hsave_pa,0));
 	noir_set_bitmap(bitmap3,svm_msrpm_bit(3,amd64_hsave_pa,1));
-	// Setup custom MSR-Interception.
+	if(hvm_p->options.stealth_msr_hook)
+	{
+	// Setup custom MSR-Interception if enabled.
 #if defined(_amd64)
-	noir_set_bitmap(bitmap2,svm_msrpm_bit(2,amd64_lstar,0));			// Hide MSR Hook
+		unref_var(bitmap1);
+		noir_set_bitmap(bitmap2,svm_msrpm_bit(2,amd64_lstar,0));			// Hide MSR Hook
+		noir_set_bitmap(bitmap2,svm_msrpm_bit(2,amd64_lstar,1));			// Mask MSR Hook
 #else
-	noir_set_bitmap(bitmap1,svm_msrpm_bit(1,amd64_sysenter_eip,0));		// Hide MSR Hook
+		noir_set_bitmap(bitmap1,svm_msrpm_bit(1,amd64_sysenter_eip,0));		// Hide MSR Hook
+		noir_set_bitmap(bitmap1,svm_msrpm_bit(1,amd64_sysenter_eip,1));		// Mask MSR Hook
+#endif
+	}
+}
+
+void static nvc_svm_setup_virtual_msr(noir_svm_vcpu_p vcpu)
+{
+	noir_svm_virtual_msr_p vmsr=&vcpu->virtual_msr;
+#if defined(_amd64)
+	vmsr->lstar=(u64)orig_system_call;
+#else
+	vmsr->sysenter_eip=(u64)orig_system_call;
 #endif
 }
 
@@ -137,9 +152,15 @@ void static nvc_svm_setup_control_area(noir_svm_vcpu_p vcpu)
 	list1.value=0;
 	list1.intercept_cpuid=1;
 	list1.intercept_msr=1;
+	list1.intercept_shutdown=1;
 	list2.value=0;
-	list2.intercept_vmrun=1;	// The vmrun should always be intercepted as required by AMD.
+	list2.intercept_vmrun=1;		// The vmrun should always be intercepted as required by AMD.
 	list2.intercept_vmmcall=1;
+	list2.intercept_vmload=1;
+	list2.intercept_vmsave=1;
+	list2.intercept_stgi=1;
+	list2.intercept_clgi=1;
+	list2.intercept_skinit=1;
 	// Policy: Enable as most features as possible.
 	// Save them to vCPU.
 	if(d & amd64_cpuid_vmcb_clean_bit)
@@ -166,14 +187,13 @@ void static nvc_svm_setup_control_area(noir_svm_vcpu_p vcpu)
 	}
 	// Write to VMCB.
 	noir_svm_vmwrite32(vcpu->vmcb.virt,intercept_instruction1,list1.value);
-	noir_svm_vmwrite32(vcpu->vmcb.virt,intercept_instruction2,list2.value);
+	noir_svm_vmwrite16(vcpu->vmcb.virt,intercept_instruction2,list2.value);
 }
 
 ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_ptr gip)
 {
 	// Save Processor State
 	noir_processor_state state;
-	nvc_svm_enable();
 	noir_save_processor_state(&state);
 	// Setup State-Save Area
 	// Save Segment State - CS
@@ -234,7 +254,7 @@ ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_p
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_dr6,state.dr6);
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_dr7,state.dr7);
 	// Save RFlags, RSP and RIP
-	noir_svm_vmwrite(vcpu->vmcb.virt,guest_rflags,2);	//Fixed bit should be set.
+	noir_svm_vmwrite(vcpu->vmcb.virt,guest_rflags,2);	// Fixed bit should be set.
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_rsp,gsp);
 	noir_svm_vmwrite(vcpu->vmcb.virt,guest_rip,gip);
 	// Save Processor Hidden State
@@ -245,12 +265,20 @@ ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_p
 	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_efer,state.efer);
 #if defined(_amd64)
 	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_star,state.star);
-	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_lstar,(u64)noir_system_call);
+	if(vcpu->enabled_feature & noir_svm_syscall_hook)
+		noir_svm_vmwrite64(vcpu->vmcb.virt,guest_lstar,(u64)noir_system_call);
+	else
+		noir_svm_vmwrite64(vcpu->vmcb.virt,guest_lstar,(u64)orig_system_call);
 	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_cstar,state.cstar);
 	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_sfmask,state.sfmask);
 	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_kernel_gs_base,state.gsswap);
 #else
-	noir_svm_vmwrite32(vcpu->vmcb.virt,guest_sysenter_eip,(u32)noir_system_call);
+	if(vcpu->enabled_feature & noir_svm_syscall_hook)
+		noir_svm_vmwrite32(vcpu->vmcb.virt,guest_sysenter_eip,(u32)noir_system_call);
+	else
+		noir_svm_vmwrite32(vcpu->vmcb.virt,guest_sysenter_eip,(u32)orig_system_call);
+	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_sysenter_cs,state.sysenter_cs);
+	noir_svm_vmwrite64(vcpu->vmcb.virt,guest_sysenter_esp,state.sysenter_esp);
 #endif
 	// Setup Control Area
 	nvc_svm_setup_control_area(vcpu);
@@ -259,8 +287,6 @@ ulong_ptr nvc_svm_subvert_processor_i(noir_svm_vcpu_p vcpu,ulong_ptr gsp,ulong_p
 	noir_svm_vmwrite64(vcpu->vmcb.virt,msrpm_physical_address,vcpu->relative_hvm->msrpm.phys);
 	noir_svm_vmwrite32(vcpu->vmcb.virt,guest_asid,1);		// ASID must be non-zero.
 	// We will assign a guest asid other than 1 as we are nesting a hypervisor.
-	// Enable Global Interrupt.
-	noir_svm_stgi();
 	// Load Partial Guest State by vmload and continue subversion.
 	noir_svm_vmload((ulong_ptr)vcpu->vmcb.phys);
 	// "Return" puts the value onto rax register.
@@ -278,8 +304,7 @@ void static nvc_svm_subvert_processor(noir_svm_vcpu_p vcpu)
 		stack->proc_id=vcpu->proc_id;
 		stack->vcpu=vcpu;
 		noir_wrmsr(amd64_hsave_pa,vcpu->hsave.phys);
-		vcpu->enabled_feature|=noir_svm_cpuid_caching;
-		nvc_svm_build_cpuid_cache_per_vcpu(vcpu);
+		nvc_svm_setup_virtual_msr(vcpu);
 		vcpu->status=nvc_svm_subvert_processor_a(stack);
 	}
 }
@@ -295,8 +320,7 @@ void nvc_svm_cleanup(noir_hypervisor_p hvm_p)
 {
 	if(hvm_p->virtual_cpu)
 	{
-		u32 i=0;
-		for(;i<hvm_p->cpu_count;i++)
+		for(u32 i=0;i<hvm_p->cpu_count;i++)
 		{
 			noir_svm_vcpu_p vcpu=&hvm_p->virtual_cpu[i];
 			if(vcpu->vmcb.virt)
@@ -307,16 +331,6 @@ void nvc_svm_cleanup(noir_hypervisor_p hvm_p)
 				noir_free_contd_memory(vcpu->hvmcb.virt);
 			if(vcpu->hv_stack)
 				noir_free_nonpg_memory(vcpu->hv_stack);
-			if(vcpu->cpuid_cache.std_leaf)
-				noir_free_nonpg_memory(vcpu->cpuid_cache.std_leaf);
-			if(vcpu->cpuid_cache.ext_leaf)
-				noir_free_nonpg_memory(vcpu->cpuid_cache.ext_leaf);
-			if(vcpu->cpuid_cache.hvm_leaf)
-				noir_free_nonpg_memory(vcpu->cpuid_cache.hvm_leaf);
-			if(vcpu->cpuid_cache.res_leaf)
-				noir_free_nonpg_memory(vcpu->cpuid_cache.res_leaf);
-			if(vcpu->cpuid_cache.cache_base)
-				noir_free_nonpg_memory(vcpu->cpuid_cache.cache_base);
 		}
 		noir_free_nonpg_memory(hvm_p->virtual_cpu);
 	}
@@ -324,88 +338,28 @@ void nvc_svm_cleanup(noir_hypervisor_p hvm_p)
 		noir_free_contd_memory(hvm_p->relative_hvm->msrpm.virt);
 	if(hvm_p->relative_hvm->iopm.virt)
 		noir_free_contd_memory(hvm_p->relative_hvm->iopm.virt);
+	if(hvm_p->relative_hvm->blank_page.virt)
+		noir_free_contd_memory(hvm_p->relative_hvm->blank_page.virt);
 	if(hvm_p->relative_hvm->primary_nptm)
 		nvc_npt_cleanup(hvm_p->relative_hvm->primary_nptm);
+#if !defined(_hv_type1)
 	if(hvm_p->relative_hvm->secondary_nptm)
 		nvc_npt_cleanup(hvm_p->relative_hvm->secondary_nptm);
-}
-
-bool static nvc_svm_alloc_cpuid_cache(noir_hypervisor_p hvm_p)
-{
-	noir_svm_cached_cpuid_p cache=&hvm_p->virtual_cpu->cpuid_cache;
-	u32 stda,stdb,stdc,stdd;
-	u32 exta,extb,extc,extd;
-	u32 i=0;
-	noir_cpuid(0,0,&stda,&stdb,&stdc,&stdd);
-	hvm_p->relative_hvm->std_leaftotal=++stda;
-	noir_cpuid(0x80000000,0,&exta,&extb,&extc,&extd);
-	hvm_p->relative_hvm->ext_leaftotal=++exta-0x80000000;
-	hvm_p->relative_hvm->hvm_leaftotal=2;
-	if(nvc_svm_build_cpuid_handler(hvm_p->relative_hvm->std_leaftotal,hvm_p->relative_hvm->hvm_leaftotal,hvm_p->relative_hvm->ext_leaftotal,0)==false)return false;
-	for(;i<hvm_p->cpu_count;cache=&hvm_p->virtual_cpu[++i].cpuid_cache)
-	{
-		u32 j;
-		ulong_ptr base;
-		cache->std_leaf=noir_alloc_nonpg_memory(hvm_p->relative_hvm->std_leaftotal*sizeof(void**));
-		if(cache->std_leaf==null)return false;
-		cache->hvm_leaf=noir_alloc_nonpg_memory(hvm_p->relative_hvm->hvm_leaftotal*sizeof(void**));
-		if(cache->hvm_leaf==null)return false;
-		cache->ext_leaf=noir_alloc_nonpg_memory(hvm_p->relative_hvm->ext_leaftotal*sizeof(void**));
-		if(cache->ext_leaf==null)return false;
-		cache->cache_base=noir_alloc_nonpg_memory(page_size);
-		if(cache->cache_base==null)return false;
-		// One Page should be sufficient. In case it becomes deficient, we will increase allocation.
-		base=(ulong_ptr)cache->cache_base;
-		cache->max_leaf[std_leaf_index]=hvm_p->relative_hvm->std_leaftotal;
-		cache->max_leaf[hvm_leaf_index]=hvm_p->relative_hvm->hvm_leaftotal;
-		cache->max_leaf[ext_leaf_index]=hvm_p->relative_hvm->ext_leaftotal;
-		// Standard CPUID Leaf
-		for(j=0;j<cache->max_leaf[std_leaf_index];j++)
-		{
-			cache->std_leaf[j]=(void*)base;
-			if((1<<j) & noir_svm_cpuid_std_submask)
-				base+=128;		// Allocate 128 bytes for leaf with subfunctions
-			else
-				base+=16;		// Allocate 16 bytes for leaf without subfunction
-		}
-		// Hypervisor CPUID Leaf
-		for(j=0;j<cache->max_leaf[hvm_leaf_index];j++)
-		{
-			cache->hvm_leaf[j]=(void*)base;
-			base+=16;
-		}
-		// Extended CPUID Leaf
-		for(j=0;j<cache->max_leaf[ext_leaf_index];j++)
-		{
-			cache->ext_leaf[j]=(void*)base;
-			if((1<<j) & noir_svm_cpuid_ext_submask)
-				base+=128;		// Allocate 128 bytes for leaf with subfunctions
-			else
-				base+=16;		// Allocate 16 bytes for leaf without subfunction
-		}
-		if(base-(ulong_ptr)cache->cache_base>=page_size)
-		{
-			// In this case, one page is insufficient!
-			nv_dprintf("Allocation failed! One Page is insufficient for caching!\n");
-			return false;
-		}
-		nv_dprintf("CPUID cache starts at 0x%p\t ends at 0x%p\n",cache->cache_base,base);
-	}
-	return true;
+#endif
+	nvc_svm_teardown_exit_handler();
 }
 
 noir_status nvc_svm_subvert_system(noir_hypervisor_p hvm_p)
 {
 	hvm_p->cpu_count=noir_get_processor_count();
-	if(nvc_svm_build_exit_handler()==false)return noir_insufficient_resources;
+	if(nvc_svm_build_exit_handler()==false)goto alloc_failure;
 	hvm_p->virtual_cpu=noir_alloc_nonpg_memory(hvm_p->cpu_count*sizeof(noir_svm_vcpu));
 	// Implementation of Generic Call might differ.
 	// In subversion routine, it might not be allowed to allocate memory.
 	// Thus allocate everything at this moment, even if it costs more on single processor core.
 	if(hvm_p->virtual_cpu)
 	{
-		u32 i=0;
-		for(;i<hvm_p->cpu_count;i++)
+		for(u32 i=0;i<hvm_p->cpu_count;i++)
 		{
 			noir_svm_vcpu_p vcpu=&hvm_p->virtual_cpu[i];
 			vcpu->vmcb.virt=noir_alloc_contd_memory(page_size);
@@ -426,9 +380,13 @@ noir_status nvc_svm_subvert_system(noir_hypervisor_p hvm_p)
 			vcpu->hv_stack=noir_alloc_nonpg_memory(nvc_stack_size);
 			if(vcpu->hv_stack==null)return noir_insufficient_resources;
 			vcpu->relative_hvm=(noir_svm_hvm_p)hvm_p->reserved;
+			if(hvm_p->options.stealth_msr_hook)vcpu->enabled_feature|=noir_svm_syscall_hook;
+			// Do not enable stealth inline hook right now since this feature is incomplete.
 		}
 	}
 	hvm_p->relative_hvm=(noir_svm_hvm_p)hvm_p->reserved;
+	hvm_p->relative_hvm->hvm_cpuid_leaf_max=nvc_mshv_build_cpuid_handlers();
+	if(hvm_p->relative_hvm->hvm_cpuid_leaf_max==0)goto alloc_failure;
 	hvm_p->relative_hvm->msrpm.virt=noir_alloc_contd_memory(2*page_size);
 	if(hvm_p->relative_hvm->msrpm.virt)
 		hvm_p->relative_hvm->msrpm.phys=noir_get_physical_address(hvm_p->relative_hvm->msrpm.virt);
@@ -441,13 +399,15 @@ noir_status nvc_svm_subvert_system(noir_hypervisor_p hvm_p)
 		goto alloc_failure;
 	hvm_p->relative_hvm->primary_nptm=(void*)nvc_npt_build_identity_map();
 	if(hvm_p->relative_hvm->primary_nptm==null)goto alloc_failure;
-	if(nvc_npt_initialize_ci(hvm_p->relative_hvm->primary_nptm)==false)goto alloc_failure;
+#if !defined(_hv_type1)
+	// Only Type-II Hypervisor would hook into guest.
 	hvm_p->relative_hvm->secondary_nptm=(void*)nvc_npt_build_identity_map();
 	if(hvm_p->relative_hvm->secondary_nptm==null)goto alloc_failure;
-	if(hvm_p->virtual_cpu==null)goto alloc_failure;
-	if(nvc_svm_alloc_cpuid_cache(hvm_p)==false)goto alloc_failure;
+	// nvc_npt_build_hook_mapping(hvm_p);
+#endif
 	nvc_svm_setup_msr_hook(hvm_p);
-	//nvc_npt_build_hook_mapping(hvm_p);
+	if(hvm_p->virtual_cpu==null)goto alloc_failure;
+	if(nvc_npt_initialize_ci(hvm_p->relative_hvm->primary_nptm)==false)goto alloc_failure;
 	if(nvc_npt_protect_critical_hypervisor(hvm_p)==false)goto alloc_failure;
 	nv_dprintf("All allocations are done, start subversion!\n");
 	noir_generic_call(nvc_svm_subvert_processor_thunk,hvm_p->virtual_cpu);
@@ -467,8 +427,8 @@ void static nvc_svm_restore_processor(noir_svm_vcpu_p vcpu)
 		noir_svm_vmmcall(noir_svm_callexit,(ulong_ptr)vcpu);
 	// Mark the processor is in "off" status as we are in Host Mode now.
 	if(vcpu->status==noir_virt_trans)
-		vcpu->status=noir_virt_off;
-	nvc_svm_disable();
+		vcpu->status=nvc_svm_disable();
+	// Things are problematic if vcpu status is not "off".
 }
 
 void static nvc_svm_restore_processor_thunk(void* context,u32 processor_id)
@@ -484,7 +444,6 @@ void nvc_svm_restore_system(noir_hypervisor_p hvm_p)
 	{
 		noir_generic_call(nvc_svm_restore_processor_thunk,hvm_p->virtual_cpu);
 		nvc_svm_cleanup(hvm_p);
-		nvc_svm_teardown_cpuid_handler();
-		nvc_svm_teardown_exit_handler();
+		nvc_mshv_teardown_cpuid_handlers();
 	}
 }

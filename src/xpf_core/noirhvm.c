@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the central HyperVisor of NoirVisor.
 
@@ -102,6 +102,7 @@ noir_status nvc_build_hypervisor()
 	{
 		noir_get_vendor_string(hvm_p->vendor_string);
 		hvm_p->cpu_manuf=nvc_confirm_cpu_manufacturer(hvm_p->vendor_string);
+		hvm_p->options.value=noir_query_enabled_features_in_system();
 		nvc_store_image_info(&hvm_p->hv_image.base,&hvm_p->hv_image.size);
 		switch(hvm_p->cpu_manuf)
 		{

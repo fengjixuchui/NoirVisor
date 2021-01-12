@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file defines compiler intrinsics.
 
@@ -43,6 +43,8 @@
 #define noir_writecr0	__writecr0
 #define noir_writecr3	__writecr3
 #define noir_writecr4	__writecr4
+
+void noir_xsetbv(u32 xcr_id,u64 val);
 
 // Read/Write CR8 Register instructions(64-bit only)
 #if defined(_amd64)
@@ -92,6 +94,15 @@
 #define noir_movsp		__movsd
 #endif
 
+// Processor TSC instruction
+#define noir_rdtsc		__rdtsc
+#define noir_rdtscp		__rdtscp
+
+// Memory Barrier instructions.
+#define noir_load_fence		_mm_lfence
+#define noir_store_fence	_mm_sfence
+#define noir_memory_fence	_mm_mfence
+
 // Clear/Set RFlags.IF
 #define noir_cli	_disable
 #define noir_sti	_enable
@@ -112,11 +123,40 @@
 #define noir_locked_xor			_InterlockedXor
 #define noir_locked_xchg		_InterlockedExchange
 #define noir_locked_cmpxchg		_InterlockedCompareExchange
+
+// 64-Bit Atomic Operations
+#if defined(_amd64)
+#define noir_locked_add64		_InterlockedAdd64
+#define noir_locked_inc64		_InterlockedIncrement64
+#define noir_locked_dec64		_InterlockedDecrement64
+#define noir_locked_and64		_InterlockedAnd64
+#define noir_locked_or64		_InterlockedOr64
+#define noir_locked_xor64		_InterlockedXor64
+#define noir_locked_xchg64		_InterlockedExchange64
+#define noir_locked_cmpxchg64	_InterlockedCompareExchange64
+#endif
+#endif
+
+// Optimization Intrinsics for Branch-Prediction
+#if defined(_llvm) || defined(_gcc)
+// Clang and GCC supports optimizing branches by intrinsics.
+#define likely(x)		__builtin_expect((x),1)
+#define unlikely(x)		__builtin_expect((x),0)
+#else
+#define likely(x)		(x)
+#define unlikely(x)		(x)
+#endif
+
+#if defined(_llvm)
+#define strchr	__builtin_strchr
+#define strcmp	__builtin_strcmp
+#define strlen	__builtin_strlen
+#define strncmp	__builtin_strncmp
 #endif
 
 // Unreference Parameters/Variables
-#define unref_var(x)	x=x
-#define unref_param(x)	x=x
+#define unref_var(x)	(x=x)
+#define unref_param(x)	(x=x)
 
 // The rest are done by inline functions.
 

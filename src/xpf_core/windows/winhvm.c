@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the HyperVisor Invoker on Windows Platform.
 
@@ -18,6 +18,102 @@
 #include <ntstrsafe.h>
 #include "winhvm.h"
 
+NTSTATUS NoirReportWindowsVersion()
+{
+	NTSTATUS st=STATUS_NOT_SUPPORTED;
+	int Info[4];
+	__cpuid(Info,1);
+	if(_bittest(&Info[2],31))
+	{
+		__cpuid(Info,CPUID_LEAF_HV_VENDOR_ID);
+		if(Info[0]>=CPUID_LEAF_HV_VENDOR_NEUTRAL)
+		{
+			__cpuid(Info,CPUID_LEAF_HV_VENDOR_NEUTRAL);
+			if(Info[0]=='1#vH')
+			{
+				RTL_OSVERSIONINFOEXW OsVer;
+				OsVer.dwOSVersionInfoSize=sizeof(OsVer);
+				st=RtlGetVersion((PRTL_OSVERSIONINFOW)&OsVer);
+				if(NT_SUCCESS(st))
+				{
+					HV_MSR_PROPRIETARY_GUEST_OS_ID HvMsrOsId;
+					HvMsrOsId.BuildNumber=OsVer.dwBuildNumber;
+					HvMsrOsId.ServiceVersion=OsVer.wServicePackMajor;
+					HvMsrOsId.MajorVersion=OsVer.dwMajorVersion;
+					HvMsrOsId.MinorVersion=OsVer.dwMinorVersion;
+					HvMsrOsId.OsId=HV_WINDOWS_NT_OS_ID;
+					HvMsrOsId.VendorId=HV_MICROSOFT_VENDOR_ID;
+					HvMsrOsId.OsType=0;
+					__writemsr(HV_X64_MSR_GUEST_OS_ID,HvMsrOsId.Value);
+				}
+			}
+		}
+	}
+	return st;
+}
+
+void NoirPrintCompilerVersion()
+{
+	ULONG Build=_MSC_FULL_VER%100000;
+	ULONG Minor=_MSC_VER%100;
+	ULONG Major=_MSC_VER/100;
+	NoirDebugPrint("Compiler Version: MSVC %02d.%02d.%05d\n",Major,Minor,Build);
+	NoirDebugPrint("NoirVisor Compliation Date: %s %s\n",__DATE__,__TIME__);
+}
+
+NTSTATUS NoirQueryEnabledFeaturesInSystem(OUT PULONG64 Features)
+{
+	// Setup default values.
+	ULONG32 CpuidPresence=1;		// Enable CPUID Presence at default.
+	ULONG32 StealthMsrHook=0;		// Disable Stealth MSR Hook at default.
+	ULONG32 StealthInlineHook=1;	// Enable Stealth Inline Hook at default.
+	// Initialize.
+	NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
+	PKEY_VALUE_PARTIAL_INFORMATION KvPartInf=ExAllocatePool(PagedPool,PAGE_SIZE);
+	if(KvPartInf)
+	{
+		HANDLE hKey=NULL;
+		UNICODE_STRING uniKeyName=RTL_CONSTANT_STRING(L"\\Registry\\Machine\\Software\\Zero-Tang\\NoirVisor");
+		OBJECT_ATTRIBUTES oa;
+		InitializeObjectAttributes(&oa,&uniKeyName,OBJ_CASE_INSENSITIVE|OBJ_KERNEL_HANDLE,NULL,NULL);
+		st=ZwOpenKey(&hKey,GENERIC_READ,&oa);
+		if(NT_SUCCESS(st))
+		{
+			UNICODE_STRING uniKvName;
+			ULONG RetLen=0;
+			// Detect if CPUID-Presence is enabled.
+			RtlInitUnicodeString(&uniKvName,L"CpuidPresence");
+			st=ZwQueryValueKey(hKey,&uniKvName,KeyValuePartialInformation,KvPartInf,PAGE_SIZE,&RetLen);
+			if(NT_SUCCESS(st))CpuidPresence=*(PULONG32)KvPartInf->Data;
+			NoirDebugPrint("CPUID-Presence is %s!\n",CpuidPresence?"enabled":"disabled");
+			// Detect if Stealth MSR Hook is enabled
+			RtlInitUnicodeString(&uniKvName,L"StealthMsrHook");
+			st=ZwQueryValueKey(hKey,&uniKvName,KeyValuePartialInformation,KvPartInf,PAGE_SIZE,&RetLen);
+			if(NT_SUCCESS(st))StealthMsrHook=*(PULONG32)KvPartInf->Data;
+			NoirDebugPrint("Stealth MSR Hook is %s!\n",StealthMsrHook?"enabled":"disabled");
+			// Detect if Stealth Inline Hook is enabled
+			RtlInitUnicodeString(&uniKvName,L"StealthInlineHook");
+			st=ZwQueryValueKey(hKey,&uniKvName,KeyValuePartialInformation,KvPartInf,PAGE_SIZE,&RetLen);
+			if(NT_SUCCESS(st))StealthInlineHook=*(PULONG32)KvPartInf->Data;
+			NoirDebugPrint("Stealth Inline Hook is %s!\n",StealthInlineHook?"enabled":"disabled");
+			ZwClose(hKey);
+		}
+		ExFreePool(KvPartInf);
+	}
+	// Summarize
+	*Features|=CpuidPresence<<NOIR_HVM_FEATURE_CPUID_PRESENCE_BIT;
+	*Features|=StealthMsrHook<<NOIR_HVM_FEATURE_STEALTH_MSR_HOOK_BIT;
+	*Features|=StealthInlineHook<<NOIR_HVM_FEATURE_STEALTH_INLINE_HOOK_BIT;
+	return st;
+}
+
+ULONG64 noir_query_enabled_features_in_system()
+{
+	ULONG64 Features=0;
+	NoirQueryEnabledFeaturesInSystem(&Features);
+	return Features;
+}
+
 NTSTATUS NoirGetSystemVersion(OUT PWSTR VersionString,IN ULONG VersionLength)
 {
 	NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
@@ -33,25 +129,28 @@ NTSTATUS NoirGetSystemVersion(OUT PWSTR VersionString,IN ULONG VersionLength)
 		{
 			UNICODE_STRING uniKvName;
 			ULONG RetLen=0;
-			WCHAR ProductName[128],CSDVersion[128],BuildNumber[8];
+			WCHAR ProductName[128],BuildLabEx[128],BuildNumber[8];
 			RtlZeroMemory(VersionString,VersionLength);
 			// Get Windows Product Name
 			RtlZeroMemory(KvPartInf,PAGE_SIZE);
+			RtlZeroMemory(ProductName,sizeof(ProductName));
 			RtlInitUnicodeString(&uniKvName,L"ProductName");
 			st=ZwQueryValueKey(hKey,&uniKvName,KeyValuePartialInformation,KvPartInf,PAGE_SIZE,&RetLen);
-			if(NT_SUCCESS(st))RtlStringCchCopyNW(ProductName,128,(PWSTR)KvPartInf->Data,KvPartInf->DataLength);
+			if(NT_SUCCESS(st))RtlStringCbCopyNW(ProductName,sizeof(ProductName),(PWSTR)KvPartInf->Data,KvPartInf->DataLength);
 			// Get Windows CSD Version
 			RtlZeroMemory(KvPartInf,PAGE_SIZE);
-			RtlInitUnicodeString(&uniKvName,L"CSDVersion");
+			RtlZeroMemory(BuildLabEx,sizeof(BuildLabEx));
+			RtlInitUnicodeString(&uniKvName,L"BuildLabEx");
 			st=ZwQueryValueKey(hKey,&uniKvName,KeyValuePartialInformation,KvPartInf,PAGE_SIZE,&RetLen);
-			if(NT_SUCCESS(st))RtlStringCchCopyNW(CSDVersion,128,(PWSTR)KvPartInf->Data,KvPartInf->DataLength);
+			if(NT_SUCCESS(st))RtlStringCbCopyNW(BuildLabEx,sizeof(BuildLabEx),(PWSTR)KvPartInf->Data,KvPartInf->DataLength);
 			// Get Windows Build Number
 			RtlZeroMemory(KvPartInf,PAGE_SIZE);
+			RtlZeroMemory(BuildNumber,sizeof(BuildNumber));
 			RtlInitUnicodeString(&uniKvName,L"CurrentBuildNumber");
 			st=ZwQueryValueKey(hKey,&uniKvName,KeyValuePartialInformation,KvPartInf,PAGE_SIZE,&RetLen);
-			if(NT_SUCCESS(st))RtlStringCchCopyNW(BuildNumber,8,(PWSTR)KvPartInf->Data,KvPartInf->DataLength);
+			if(NT_SUCCESS(st))RtlStringCbCopyNW(BuildNumber,sizeof(BuildNumber),(PWSTR)KvPartInf->Data,KvPartInf->DataLength);
 			// Build the String
-			st=RtlStringCbPrintfW(VersionString,VersionLength,L"%ws %ws Build %ws",ProductName,CSDVersion,BuildNumber);
+			st=RtlStringCbPrintfW(VersionString,VersionLength,L"%ws Build %ws (%ws)",ProductName,BuildNumber,BuildLabEx);
 			NoirDebugPrint("System Version: %ws\n",VersionString);
 			ZwClose(hKey);
 		}
@@ -133,7 +232,7 @@ BOOLEAN NoirInitializeCodeIntegrity(IN PVOID ImageBase)
 					PVOID CodeBase=(PVOID)((ULONG_PTR)ImageBase+SectionHeaders[i].VirtualAddress);
 					ULONG CodeSize=SectionHeaders[i].SizeOfRawData;
 					NoirDebugPrint("Code Base: 0x%p\t Size: 0x%X\n",CodeBase,CodeSize);
-					return noir_initialize_ci(CodeBase,CodeSize);
+					return noir_initialize_ci(CodeBase,CodeSize,TRUE,TRUE);
 				}
 			}
 		}

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic driver of Intel VT-x.
 
@@ -19,7 +19,6 @@
 #include <noirhvm.h>
 #include <nv_intrin.h>
 #include <ia32.h>
-#include "vt_cpuid.h"
 #include "vt_vmcs.h"
 #include "vt_def.h"
 #include "vt_ept.h"
@@ -99,8 +98,7 @@ void static nvc_vt_cleanup(noir_hypervisor_p hvm)
 		if(hvm->virtual_cpu)
 		{
 			u32 i=0;
-			noir_vt_vcpu_p vcpu=hvm->virtual_cpu;
-			for(;i<hvm->cpu_count;vcpu=&hvm->virtual_cpu[++i])
+			for(noir_vt_vcpu_p vcpu=hvm->virtual_cpu;i<hvm->cpu_count;vcpu=&hvm->virtual_cpu[++i])
 			{
 				if(vcpu->vmxon.virt)
 					noir_free_contd_memory(vcpu->vmxon.virt);
@@ -135,12 +133,17 @@ void static nvc_vt_setup_msr_hook_p(noir_vt_vcpu_p vcpu)
 	noir_vt_vmwrite64(vmexit_msr_load_address,exit_load);
 	noir_vt_vmwrite64(vmexit_msr_store_address,exit_store);
 	noir_vt_vmwrite64(address_of_msr_bitmap,vcpu->relative_hvm->msr_bitmap.phys);
+#if !defined(_hv_type1)
+	if(vcpu->enabled_feature & noir_vt_syscall_hook)
+	{
 #if defined(_amd64)
-	noir_vt_vmwrite(vmentry_msr_load_count,1);
-	noir_vt_vmwrite(vmexit_msr_load_count,1);
+		noir_vt_vmwrite(vmentry_msr_load_count,1);
+		noir_vt_vmwrite(vmexit_msr_load_count,1);
 #else
-	noir_vt_vmwrite(guest_msr_ia32_sysenter_eip,(ulong_ptr)noir_system_call);
-	noir_vt_vmwrite(host_msr_ia32_sysenter_eip,orig_system_call);
+		noir_vt_vmwrite(guest_msr_ia32_sysenter_eip,(ulong_ptr)noir_system_call);
+		noir_vt_vmwrite(host_msr_ia32_sysenter_eip,orig_system_call);
+#endif
+	}
 #endif
 }
 
@@ -160,11 +163,19 @@ void static nvc_vt_setup_msr_auto_list(noir_hypervisor_p hvm)
 	ia32_vmx_msr_auto_p exit_store=(ia32_vmx_msr_auto_p)((ulong_ptr)hvm->relative_hvm->msr_auto_list.virt+0x800);
 	unref_var(exit_store);
 	// Setup custom MSR-Auto list.
+#if !defined(_hv_type1)
+	if(hvm->options.stealth_msr_hook)
+	{
 #if defined(_amd64)
-	entry_load[0].index=ia32_lstar;
-	entry_load[0].data=(ulong_ptr)noir_system_call;
-	exit_load[0].index=ia32_lstar;
-	exit_load[0].data=orig_system_call;
+		entry_load[0].index=ia32_lstar;
+		entry_load[0].data=(ulong_ptr)noir_system_call;
+		exit_load[0].index=ia32_lstar;
+		exit_load[0].data=orig_system_call;
+#endif
+	}
+#else
+	unref_var(entry_load);
+	unref_var(exit_load);
 #endif
 }
 
@@ -177,12 +188,24 @@ void static nvc_vt_setup_msr_hook(noir_hypervisor_p hvm)
 	unref_var(write_bitmap_low);
 	unref_var(write_bitmap_high);
 	// Setup custom MSR-Interception.
+#if !defined(_hv_type1)
+	if(hvm->options.stealth_msr_hook)
+	{
 #if defined(_amd64)
-	noir_set_bitmap(read_bitmap_high,ia32_lstar-0xC0000000);	// Hide MSR Hook
+		noir_set_bitmap(read_bitmap_high,ia32_lstar-0xC0000000);	// Hide MSR Hook
+		noir_set_bitmap(write_bitmap_high,ia32_lstar-0xC0000000);	// Mask MSR Hook
 #else
-	noir_set_bitmap(read_bitmap_low,ia32_sysenter_eip);			// Hide MSR Hook
+		noir_set_bitmap(read_bitmap_low,ia32_sysenter_eip);			// Hide MSR Hook
+		noir_set_bitmap(write_bitmap_high,ia32_sysenter_eip);		// Mask MSR Hook
 #endif
-	// Setup Nested Virtualization MSR Hook.
+	}
+#else
+	unref_var(read_bitmap_high);
+#endif
+	// Setup Microcode-Updater MSR Hook. Microcode update should be intercepted in
+	// that if it is not intercepted, processor may result in undefined behavior.
+	noir_set_bitmap(write_bitmap_low,ia32_bios_updt_trig);
+	// Setup Nested Virtualization MSR Read-Hook.
 	noir_set_bitmap(read_bitmap_low,ia32_vmx_basic);
 	noir_set_bitmap(read_bitmap_low,ia32_vmx_pinbased_ctrl);
 	noir_set_bitmap(read_bitmap_low,ia32_vmx_priproc_ctrl);
@@ -201,6 +224,21 @@ void static nvc_vt_setup_msr_hook(noir_hypervisor_p hvm)
 	noir_set_bitmap(read_bitmap_low,ia32_vmx_true_exit_ctrl);
 	noir_set_bitmap(read_bitmap_low,ia32_vmx_true_entry_ctrl);
 	noir_set_bitmap(read_bitmap_low,ia32_vmx_vmfunc);
+	// No need for MSR Write-Hook. Processor automatically fails them.
+}
+
+void static nvc_vt_setup_virtual_msr(noir_vt_vcpu_p vcpu)
+{
+	noir_vt_virtual_msr_p vmsr=&vcpu->virtual_msr;
+#if !defined(_hv_type1)
+#if defined(_amd64)
+	vmsr->lstar=(u64)orig_system_call;
+#else
+	vmsr->sysenter_eip=(u64)orig_system_call;
+#endif
+#else
+	unref_var(vmsr);
+#endif
 }
 
 u8 static nvc_vt_enable(u64* vmxon_phys)
@@ -283,7 +321,7 @@ void static nvc_vt_setup_guest_state_area(noir_processor_state_p state_p,ulong_p
 	noir_vt_vmwrite(guest_dr7,state_p->dr7);
 	noir_vt_vmwrite64(guest_msr_ia32_debug_ctrl,state_p->debug_ctrl);
 	// VMCS Link Pointer - Essential for Accelerated VMX Nesting
-	noir_vt_vmwrite(vmcs_link_pointer,0xffffffffffffffff);
+	noir_vt_vmwrite64(vmcs_link_pointer,0xffffffffffffffff);
 	// Guest State Area - Flags, Stack Pointer, Instruction Pointer
 	noir_vt_vmwrite(guest_rsp,gsp);
 	noir_vt_vmwrite(guest_rip,gip);
@@ -292,6 +330,10 @@ void static nvc_vt_setup_guest_state_area(noir_processor_state_p state_p,ulong_p
 
 void static nvc_vt_setup_host_state_area(noir_vt_vcpu_p vcpu,noir_processor_state_p state_p)
 {
+	// Setup stack for Exit Handler.
+	noir_vt_initial_stack_p stack=(noir_vt_initial_stack_p)((ulong_ptr)vcpu->hv_stack+nvc_stack_size-sizeof(noir_vt_initial_stack));
+	stack->vcpu=vcpu;
+	stack->proc_id=noir_get_current_processor();
 	// Host State Area - Segment Selectors
 	noir_vt_vmwrite(host_cs_selector,state_p->cs.selector & selector_rplti_mask);
 	noir_vt_vmwrite(host_ds_selector,state_p->ds.selector & selector_rplti_mask);
@@ -312,7 +354,7 @@ void static nvc_vt_setup_host_state_area(noir_vt_vcpu_p vcpu,noir_processor_stat
 	noir_vt_vmwrite(host_cr3,system_cr3);	// We should use the system page table.
 	noir_vt_vmwrite(host_cr4,state_p->cr4);
 	// Host State Area - Stack Pointer, Instruction Pointer
-	noir_vt_vmwrite(host_rsp,(ulong_ptr)vcpu->hv_stack+nvc_stack_size-0x20);
+	noir_vt_vmwrite(host_rsp,(ulong_ptr)stack);
 	noir_vt_vmwrite(host_rip,(ulong_ptr)nvc_vt_exit_handler_a);
 }
 
@@ -442,15 +484,13 @@ void static nvc_vt_setup_available_features(noir_vt_vcpu_p vcpu)
 	{
 		/*
 			We require following supportability of Intel EPT:
-			Execute-Only Translation - This is used for stealth inline hook.
-			Write-Back EPT Paging Structure.
+			Write-Back EPT Paging Structure - We are allocating stuff cached in this way.
 			2MB-paging - This is used for reducing memory consumption.
 			(It can be better that processor supports 1GB-paging. However,
 			 VMware does not support emulating 1GB-paging for Intel EPT.)
 			Support invept Instruction - This is used for invalidating EPT TLB.
 		*/
 		bool ept_support_req=true;
-		ept_support_req&=ev_cap.support_exec_only_translation;
 		ept_support_req&=ev_cap.support_wb_ept;
 		ept_support_req&=ev_cap.support_2mb_paging;
 		ept_support_req&=ev_cap.support_invept;
@@ -459,7 +499,10 @@ void static nvc_vt_setup_available_features(noir_vt_vcpu_p vcpu)
 		if(ept_support_req)
 		{
 			vcpu->enabled_feature|=noir_vt_extended_paging;
+#if !defined(_hv_type1)
+			// Execute-Only Translation should be supported in order to do stealth inline hook via EPT.
 			if(ev_cap.support_exec_only_translation)vcpu->enabled_feature|=noir_vt_ept_with_hooks;
+#endif
 		}
 	}
 	// Check if Virtual Processor Identifier can be enabled.
@@ -474,8 +517,6 @@ void static nvc_vt_setup_available_features(noir_vt_vcpu_p vcpu)
 	// Check if VMCS Shadowing can be enabled.
 	if(proc2_cap.allowed1_settings.vmcs_shadowing)
 		vcpu->enabled_feature|=noir_vt_vmcs_shadowing;
-	// FIXME: Complete the CPUID Caching Architecture.
-	// vcpu->enabled_feature|=noir_vt_cpuid_caching;
 }
 
 void static nvc_vt_setup_control_area(bool true_msr)
@@ -494,6 +535,7 @@ u8 nvc_vt_subvert_processor_i(noir_vt_vcpu_p vcpu,void* reserved,ulong_ptr gsp,u
 	u8 vst=0;
 	noir_processor_state state;
 	noir_save_processor_state(&state);
+	vcpu->enabled_feature|=noir_vt_syscall_hook;
 	// Issue a sequence of vmwrite instructions to setup VMCS.
 	vt_basic.value=noir_rdmsr(ia32_vmx_basic);
 	nvc_vt_setup_available_features(vcpu);
@@ -502,10 +544,11 @@ u8 nvc_vt_subvert_processor_i(noir_vt_vcpu_p vcpu,void* reserved,ulong_ptr gsp,u
 	nvc_vt_setup_host_state_area(vcpu,&state);
 	nvc_vt_setup_memory_virtualization(vcpu);
 	nvc_vt_setup_msr_hook_p(vcpu);
-	nvc_vt_build_cpuid_cache_per_vcpu(vcpu);
+	nvc_vt_setup_virtual_msr(vcpu);
 	vcpu->status=noir_virt_on;
 	// Everything are done, perform subversion.
 	vst=noir_vt_vmlaunch();
+	nv_dprintf("Error while launching the Guest! VMX Status: %d\n",vst);
 	if(vst==vmx_fail_valid)
 	{
 		u32 err_code;
@@ -535,7 +578,38 @@ void static nvc_vt_subvert_processor(noir_vt_vcpu_p vcpu)
 				// Start subverting.
 				nv_dprintf("VMCS has been loaded to CPU successfully!\n");
 				vst=nvc_vt_subvert_processor_a(vcpu);
+				// Indicator other than zero means failure.
 				nv_dprintf("Subversion Indicator: %d\n",vst);
+				switch(vst)
+				{
+					case vmx_success:
+					{
+						nv_dprintf("Subversion is successful!\n");
+						break;
+					}
+					case vmx_fail_valid:
+					{
+						u32 err_code;
+						noir_vt_vmread(vm_instruction_error,&err_code);
+						nv_dprintf("vmlaunch failed! %s\n",vt_error_message[err_code]);
+						break;
+					}
+					case vmx_fail_invalid:
+					{
+						nv_dprintf("vmlaunch failed due to no VMCS is currently loaded!\n");
+						break;
+					}
+					case 3:
+					{
+						nv_dprintf("vmlaunch failed due to invalid guest state!\n");
+						break;
+					}
+					default:
+					{
+						nv_dprintf("Invalid Status: %d\n",vst);
+						break;
+					}
+				}
 			}
 		}
 	}
@@ -553,53 +627,6 @@ void static nvc_vt_subvert_processor_thunk(void* context,u32 processor_id)
 	nvc_vt_subvert_processor(&vcpu[processor_id]);
 }
 
-bool static nvc_vt_build_cpuid_cache(noir_hypervisor_p hvm)
-{
-	noir_vt_cpuid_info vistd,viext;
-	noir_vt_cached_cpuid_p cache=&hvm_p->virtual_cpu->cpuid_cache;
-	u32 i=0;
-	hvm->relative_hvm->hvm_leaftotal=2;
-	noir_cpuid(0,0,&vistd.eax,&vistd.ebx,&vistd.ecx,&vistd.edx);
-	hvm->relative_hvm->std_leaftotal=vistd.eax+1;
-	noir_cpuid(0x80000000,0,&viext.eax,&viext.ebx,&viext.ecx,&viext.edx);
-	hvm->relative_hvm->ext_leaftotal=viext.eax-0x80000000+1;
-	for(;i<hvm->cpu_count;cache=&hvm->virtual_cpu[++i].cpuid_cache)
-	{
-		u32 j;
-		ulong_ptr base;
-		cache->std_leaf=noir_alloc_nonpg_memory(hvm->relative_hvm->std_leaftotal*sizeof(void*));
-		if(cache->std_leaf==null)return false;
-		cache->hvm_leaf=noir_alloc_nonpg_memory(hvm->relative_hvm->hvm_leaftotal*sizeof(void*));
-		if(cache->hvm_leaf==null)return false;
-		cache->ext_leaf=noir_alloc_nonpg_memory(hvm->relative_hvm->ext_leaftotal*sizeof(void*));
-		if(cache->ext_leaf==null)return false;
-		cache->cache_base=noir_alloc_nonpg_memory(page_size);
-		if(cache->cache_base==null)return false;
-		// One page should be enough. Once it becomes deficient, we will increase allocation.
-		base=(ulong_ptr)cache->cache_base;
-		cache->max_leaf[std_leaf_index]=hvm->relative_hvm->std_leaftotal;
-		cache->max_leaf[hvm_leaf_index]=hvm->relative_hvm->hvm_leaftotal;
-		cache->max_leaf[ext_leaf_index]=hvm->relative_hvm->ext_leaftotal;
-		// Standard CPUID Leaf.
-		for(j=0;j<cache->max_leaf[std_leaf_index];j++)
-		{
-			cache->std_leaf[j]=(noir_vt_cached_cpuid_p)base;
-			if((1<<j) & noir_vt_std_cpuid_submask)
-				base+=128;	// Allocate 128 bytes for leaf with subfunctions.
-			else
-				base+=16;	// Allocate 16 bytes for leaf without subfunctions.
-		}
-		if(base-(ulong_ptr)cache->cache_base>=page_size)
-		{
-			// In this case, one page is insufficient for caching!
-			nv_dprintf("Allocation Failure! One Page is insufficient for CPUID caching!\n");
-			return false;
-		}
-		nv_dprintf("CPUID cache starts at 0x%p\t ends at 0x%p\n",cache->cache_base,base);
-	}
-	return true;
-}
-
 /*
   In NoirVisor, allocations of VMXON region and VMCS, etc. are performed in Single CPU.
   It is not Multi-CPU designed in two reasons:
@@ -610,12 +637,11 @@ bool static nvc_vt_build_cpuid_cache(noir_hypervisor_p hvm)
 */
 noir_status nvc_vt_subvert_system(noir_hypervisor_p hvm)
 {
-	u32 i=0;
 	hvm->cpu_count=noir_get_processor_count();
 	hvm->virtual_cpu=noir_alloc_nonpg_memory(hvm->cpu_count*sizeof(noir_vt_vcpu));
 	if(hvm->virtual_cpu)
 	{
-		for(;i<hvm->cpu_count;i++)
+		for(u32 i=0;i<hvm->cpu_count;i++)
 		{
 			noir_vt_vcpu_p vcpu=&hvm->virtual_cpu[i];
 			vcpu->vmcs.virt=noir_alloc_contd_memory(page_size);
@@ -661,12 +687,14 @@ noir_status nvc_vt_subvert_system(noir_hypervisor_p hvm)
 		hvm->relative_hvm->msr_auto_list.phys=noir_get_physical_address(hvm->relative_hvm->msr_auto_list.virt);
 	else
 		goto alloc_failure;
-	if(nvc_vt_build_cpuid_cache(hvm)==false)goto alloc_failure;
+
 	if(nvc_vt_build_exit_handlers()==noir_insufficient_resources)goto alloc_failure;
+	hvm->relative_hvm->hvm_cpuid_leaf_max=nvc_mshv_build_cpuid_handlers();
+	if(hvm->relative_hvm->hvm_cpuid_leaf_max==0)goto alloc_failure;
 	if(hvm->virtual_cpu==null)goto alloc_failure;
 	nvc_vt_setup_msr_hook(hvm);
 	nvc_vt_setup_msr_auto_list(hvm);
-	for(i=0;i<hvm->cpu_count;i++)
+	for(u32 i=0;i<hvm->cpu_count;i++)
 		if(nvc_ept_protect_hypervisor(hvm,(noir_ept_manager_p)hvm->virtual_cpu[i].ept_manager)==false)
 			goto alloc_failure;
 	nv_dprintf("All allocations are done, start subversion!\n");
@@ -703,5 +731,6 @@ void nvc_vt_restore_system(noir_hypervisor_p hvm)
 	{
 		noir_generic_call(nvc_vt_restore_processor_thunk,hvm->virtual_cpu);
 		nvc_vt_cleanup(hvm);
+		nvc_mshv_teardown_cpuid_handlers();
 	}
 }

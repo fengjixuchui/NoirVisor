@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is auxiliary to Hooking facility (MSR Hook, Inline Hook).
 
@@ -18,13 +18,13 @@
 #include <ntstrsafe.h>
 #include "hooks.h"
 
+// Initialize protected file information with shared lock primitive.
 NTSTATUS NoirBuildProtectedFile()
 {
 	NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
-	NoirProtectedFile=ExAllocatePool(NonPagedPool,PAGE_SIZE);
+	NoirProtectedFile=NoirAllocateNonPagedMemory(PAGE_SIZE);
 	if(NoirProtectedFile)
 	{
-		RtlZeroMemory(NoirProtectedFile,PAGE_SIZE);
 		st=ExInitializeResourceLite(&NoirProtectedFile->Lock);
 		if(NT_SUCCESS(st))
 		{
@@ -36,15 +36,18 @@ NTSTATUS NoirBuildProtectedFile()
 	return st;
 }
 
+// Finalize protected file information.
 void NoirTeardownProtectedFile()
 {
 	if(NoirProtectedFile)
 	{
 		ExDeleteResourceLite(&NoirProtectedFile->Lock);
-		ExFreePool(NoirProtectedFile);
+		NoirFreeNonPagedMemory(NoirProtectedFile);
+		NoirProtectedFile=NULL;
 	}
 }
 
+// Use exclusive locking primitive to revise protected file information.
 void NoirSetProtectedFile(IN PWSTR FileName)
 {
 	if(NoirProtectedFile)
@@ -61,6 +64,7 @@ void NoirSetProtectedFile(IN PWSTR FileName)
 	}
 }
 
+// Use shared locking primitive to read protected file information.
 BOOLEAN NoirIsProtectedFile(IN PWSTR FilePath)
 {
 	BOOLEAN Result=FALSE;
@@ -73,7 +77,7 @@ BOOLEAN NoirIsProtectedFile(IN PWSTR FilePath)
 			if(FileName)
 			{
 				FileName++;
-				Result=(_wcsnicmp(NoirProtectedFile->FileName,FileName,NoirProtectedFile->MaximumLength)==0);
+				Result=(_wcsnicmp(NoirProtectedFile->FileName,FileName,NoirProtectedFile->MaximumLength>>1)==0);
 			}
 			ExReleaseResourceLite(&NoirProtectedFile->Lock);
 		}
@@ -87,10 +91,9 @@ NTSTATUS static fake_NtSetInformationFile(IN HANDLE FileHandle,OUT PIO_STATUS_BL
 	if(FileInformationClass==FileDispositionInformation)
 	{
 		NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
-		PFILE_NAME_INFORMATION FileNameInfo=ExAllocatePool(PagedPool,PAGE_SIZE);
+		PFILE_NAME_INFORMATION FileNameInfo=NoirAllocatePagedMemory(PAGE_SIZE);
 		if(FileNameInfo)
 		{
-			RtlZeroMemory(FileNameInfo,PAGE_SIZE);
 			st=ZwQueryInformationFile(FileHandle,IoStatusBlock,FileNameInfo,PAGE_SIZE,FileNameInformation);
 			if(NT_SUCCESS(st))
 			{
@@ -99,7 +102,7 @@ NTSTATUS static fake_NtSetInformationFile(IN HANDLE FileHandle,OUT PIO_STATUS_BL
 				else
 					st=Old_NtSetInformationFile(FileHandle,IoStatusBlock,FileInformation,Length,FileInformationClass);
 			}
-			ExFreePool(FileNameInfo);
+			NoirFreePagedMemory(FileNameInfo);
 		}
 		return st;
 	}
@@ -112,12 +115,11 @@ NTSTATUS NoirConstructHook(IN PVOID Address,IN PVOID Proxy,OUT PVOID* Detour)
 	PNOIR_HOOK_PAGE HookPage=NULL;
 	NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
 	ULONG64 FPA=NoirGetPhysicalAddress(Address);
-	ULONG i=0;
 	ULONG PatchSize=GetPatchSize(Address,HookLength);
-	*Detour=ExAllocatePool(NonPagedPool,PatchSize+DetourLength);
+	*Detour=NoirAllocateNonPagedMemory(PatchSize+DetourLength);
 	if(*Detour==NULL)return st;
 	// Search if there is a hooked page containing the function.
-	for(;i<HookPageCount;i++)
+	for(ULONG i=0;i<HookPageCount;i++)
 	{
 		if(FPA>=HookPages[i].OriginalPage.PhysicalAddress && FPA<HookPages[i].OriginalPage.PhysicalAddress+PAGE_SIZE)
 		{
@@ -154,8 +156,8 @@ NTSTATUS NoirConstructHook(IN PVOID Address,IN PVOID Proxy,OUT PVOID* Detour)
 		  My implementation aims to reduce such performance consumption, where VM-Exit is avoided.
 		*/
 #if defined(_WIN64)
-		//This shellcode can breach the 4GB-limit in AMD64 architecture.
-		//No register would be destroyed.
+		// This shellcode can breach the 4GB-limit in AMD64 architecture.
+		// No register would be destroyed.
 		/*
 		  ShellCode Overview:
 		  push rax			-- 50
@@ -202,7 +204,7 @@ int static __cdecl NoirHookPageComparator(const void* a,const void*b)
 NTSTATUS NoirBuildHookedPages()
 {
 	NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
-	HookPages=ExAllocatePool(NonPagedPool,sizeof(NOIR_HOOK_PAGE)*HookPageLimit);
+	HookPages=NoirAllocateNonPagedMemory(sizeof(NOIR_HOOK_PAGE)*HookPageLimit);
 	if(HookPages)
 	{
 		PVOID NtKernelBase=NoirLocateImageBaseByName(L"ntoskrnl.exe");
@@ -229,15 +231,16 @@ void NoirTeardownHookedPages()
 	// Free all hook pages.
 	if(HookPages)
 	{
-		ULONG i=0;
-		for(;i<HookPageCount;i++)
-			MmFreeContiguousMemory(HookPages[i].HookedPage.VirtualAddress);
-		ExFreePool(HookPages);
+		for(ULONG i=0;i<HookPageCount;i++)
+			if(HookPages[i].HookedPage.VirtualAddress)
+				NoirFreeContiguousMemory(HookPages[i].HookedPage.VirtualAddress);
+		NoirFreeNonPagedMemory(HookPages);
+		HookPages=NULL;
 	}
 	// Free all detour functions allocated previously.
 	if(Old_NtSetInformationFile)
 	{
-		ExFreePool(Old_NtSetInformationFile);
+		NoirFreeNonPagedMemory(Old_NtSetInformationFile);
 		Old_NtSetInformationFile=NULL;
 	}
 }
@@ -251,6 +254,6 @@ void NoirGetNtOpenProcessIndex()
 
 void NoirSetProtectedPID(IN ULONG NewPID)
 {
-	ProtPID=NewPID;
-	ProtPID&=0xFFFFFFFC;
+	// Use atomic operation for thread-safe consideration.
+	InterlockedExchange(&ProtPID,NewPID&0xFFFFFFFC);
 }

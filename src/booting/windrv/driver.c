@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the kernel-mode driver framework of Windows.
 
@@ -53,6 +53,7 @@ void NoirDriverUnload(IN PDRIVER_OBJECT DriverObject)
 	NoirTeardownProtectedFile();
 	NoirFinalizeCodeIntegrity();
 	NoirFinalizePowerStateCallback();
+	NoirReportMemoryIntrospectionCounter();
 	IoDeleteSymbolicLink(&uniLinkName);
 	IoDeleteDevice(DriverObject->DeviceObject);
 }
@@ -80,6 +81,7 @@ NTSTATUS NoirDispatchIoControl(IN PDEVICE_OBJECT DeviceObject,IN PIRP Irp)
 		{
 			NoirSetProtectedPID((ULONG)PsGetCurrentProcessId());
 			NoirBuildHypervisor();
+			NoirReportWindowsVersion();
 			break;
 		}
 		case IOCTL_Restore:
@@ -153,6 +155,8 @@ NTSTATUS NoirDispatchIoControl(IN PDEVICE_OBJECT DeviceObject,IN PIRP Irp)
 
 void static NoirDriverReinitialize(IN PDRIVER_OBJECT DriverObject,IN PVOID Context OPTIONAL,IN ULONG Count)
 {
+	NoirPrintCompilerVersion();
+	NoirInitializeDisassembler();
 	NoirInitializeCodeIntegrity(DriverObject->DriverStart);
 	NoirLocatePsLoadedModule(DriverObject);
 	system_cr3=__readcr3();

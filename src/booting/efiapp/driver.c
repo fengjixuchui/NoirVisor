@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the UEFI Runtime Driver Framework.
 
@@ -12,12 +12,16 @@
   File Location: /booting/efiapp/driver.c
 */
 
-#include "efimain.h"
+#include <Uefi.h>
+#include <intrin.h>
+#include <Library/BaseMemoryLib.h>
+#include <Library/DevicePathLib.h>
+#include <Library/MemoryAllocationLib.h>
 #include "driver.h"
 
 EFI_STATUS EFIAPI NoirDriverUnload(IN EFI_HANDLE ImageHandle)
 {
-	NoirConsolePrintfW(L"NoirVisor is unloaded!\r\n");
+	Print(L"NoirVisor is unloaded!\r\n");
 	return EFI_SUCCESS;
 }
 
@@ -26,15 +30,39 @@ void EFIAPI NoirNotifyExitBootServices(IN EFI_EVENT Event,IN VOID* Context)
 	;
 }
 
+void NoirBlockUntilKeyStroke(IN CHAR16 Unicode)
+{
+	EFI_INPUT_KEY InKey;
+	do
+	{
+		UINTN fi=0;
+		gBS->WaitForEvent(1,&StdIn->WaitForKey,&fi);
+		StdIn->ReadKeyStroke(StdIn,&InKey);
+	}while(InKey.UnicodeChar!=Unicode);
+}
+
+EFI_STATUS EFIAPI NoirEfiInitialize(IN EFI_HANDLE ImageHandle,IN EFI_SYSTEM_TABLE *SystemTable)
+{
+	UefiBootServicesTableLibConstructor(ImageHandle,SystemTable);
+	UefiRuntimeServicesTableLibConstructor(ImageHandle,SystemTable);
+	UefiLibConstructor(ImageHandle,SystemTable);
+	DevicePathLibConstructor(ImageHandle,SystemTable);
+	StdIn=SystemTable->ConIn;
+	StdOut=SystemTable->ConOut;
+	return gBS->LocateProtocol(&gEfiMpServicesProtocolGuid,NULL,(VOID**)&MpServices);
+}
+
 EFI_STATUS EFIAPI NoirDriverEntry(IN EFI_HANDLE ImageHandle,IN EFI_SYSTEM_TABLE *SystemTable)
 {
-	NoirEfiInitialize(SystemTable);
-	NoirConsolePrintfW(L"Welcome to NoirVisor Runtime Driver!\r\n");
-	EfiBoot->CreateEvent(EVT_SIGNAL_EXIT_BOOT_SERVICES,TPL_NOTIFY,NoirNotifyExitBootServices,NULL,&NoirEfiExitBootServicesNotification);
-	EFI_GUID LoadedImageGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID;
-	EFI_LOADED_IMAGE_PROTOCOL* ImageInfo;
-	EFI_STATUS st=EfiBoot->HandleProtocol(ImageHandle,&LoadedImageGuid,&ImageInfo);
+	EFI_STATUS st=NoirEfiInitialize(ImageHandle,SystemTable);
+	EFI_LOADED_IMAGE_PROTOCOL* ImageInfo=NULL;
+	Print(L"Welcome to NoirVisor Runtime Driver!\r\n");
+	Print(L"NoirVisor's Compiler Version: LLVM Clang %a\r\n",__clang_version__);
+	Print(L"NoirVisor's Date of Compilation: %a\n",__TIMESTAMP__);
+	gBS->CreateEvent(EVT_SIGNAL_EXIT_BOOT_SERVICES,TPL_NOTIFY,NoirNotifyExitBootServices,NULL,&NoirEfiExitBootServicesNotification);
+	st=gBS->HandleProtocol(ImageHandle,&gEfiLoadedImageProtocolGuid,&ImageInfo);
 	if(st==EFI_SUCCESS)ImageInfo->Unload=NoirDriverUnload;
-	NoirConsolePrintfW(L"NoirVisor Runtime Driver Initialization Status: 0x%X\r\n",st);
+	st=NoirBuildHostEnvironment();
+	Print(L"NoirVisor Runtime Driver Initialization Status: 0x%X MpServices: 0x%p\r\n",st,MpServices);
 	return EFI_SUCCESS;
 }

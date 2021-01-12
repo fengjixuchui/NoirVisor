@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the basic Exit Handler of SVM Driver.
 
@@ -9,7 +9,7 @@
   without any warranty (no matter implied warranty or merchantability
   or fitness for a particular purpose, etc.).
 
-  File Location: /svm_core/svm_main.h
+  File Location: /svm_core/svm_exit.h
 */
 
 #include <nvdef.h>
@@ -65,14 +65,20 @@
 #define intercepted_mwait			0x8B
 #define intercepted_mwait_cond		0x8C
 #define intercepted_xsetbv			0x8D
+#define intercepted_rdpru			0x8E
 #define intercepted_efer_w_trap		0x8F
 #define intercepted_cr_w_trap(x)	0x90+x
+#define intercepted_invlpgb			0xA0
+#define illegal_invlpgb				0xA2
+#define intercepted_mcommit			0xA3
+#define intercepted_tlbsync			0xA4
 #define nested_page_fault			0x400
 #define avic_incomplete_ipi			0x401
 #define avic_no_acceleration		0x402
 #define intercepted_vmgexit			0x403
 
 #define invalid_guest_state			-1
+#define intercepted_vmsa_busy		-2
 
 #define noir_svm_maximum_code1		0x100
 #define noir_svm_maximum_code2		0x4
@@ -90,8 +96,9 @@ typedef void (fastcall *noir_svm_exit_handler_routine)
 
 typedef void (fastcall *noir_svm_cpuid_exit_handler)
 (
- noir_gpr_state_p gpr_state,
- noir_svm_vcpu_p vcpu
+ u32 leaf,
+ u32 subleaf,
+ noir_cpuid_general_info_p info
 );
 
 typedef union _amd64_event_injection
@@ -110,14 +117,8 @@ typedef union _amd64_event_injection
 
 #if defined(_svm_exit)
 noir_svm_exit_handler_routine** svm_exit_handlers=null;
-extern noir_svm_cpuid_exit_handler** svm_cpuid_handlers;
+noir_svm_cpuid_exit_handler nvcp_svm_cpuid_handler=null;
 #endif
-
-void inline noir_svm_advance_rip(void* vmcb)
-{
-	ulong_ptr nrip=noir_svm_vmread(vmcb,next_rip);
-	if(nrip)noir_svm_vmwrite(vmcb,guest_rip,nrip);
-}
 
 void inline noir_svm_inject_event(void* vmcb,u8 vector,u8 type,u8 ev,u8 v,u32 ec)
 {
@@ -129,4 +130,17 @@ void inline noir_svm_inject_event(void* vmcb,u8 vector,u8 type,u8 ev,u8 v,u32 ec
 	event_field.valid=v;
 	event_field.error_code=ec;
 	noir_svm_vmwrite64(vmcb,event_injection,event_field.value);
+}
+
+void inline noir_svm_advance_rip(void* vmcb)
+{
+	ulong_ptr nrip=noir_svm_vmread(vmcb,next_rip);
+	ulong_ptr gflags=noir_svm_vmread(vmcb,guest_rflags);
+	// In case the guest is single-step debugging, we should inject debug trace trap so that
+	// the next instruction won't be skipped in debugger, confusing the debugging personnel.
+	// If guest is single-step debugging, slight penalty due to branch predictor is acceptable.
+	if(unlikely(noir_bt((u32*)&gflags,amd64_rflags_tf)))
+		noir_svm_inject_event(vmcb,amd64_debug_exception,amd64_fault_trap_exception,false,true,0);
+	// FIXME: Check Debug Registers. If condition matches, inject #DB exception.
+	if(nrip)noir_svm_vmwrite(vmcb,guest_rip,nrip);
 }

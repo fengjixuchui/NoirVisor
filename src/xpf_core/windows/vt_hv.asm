@@ -1,6 +1,6 @@
 ; NoirVisor - Hardware-Accelerated Hypervisor solution
 ; 
-; Copyright 2018-2020, Zero Tang. All rights reserved.
+; Copyright 2018-2021, Zero Tang. All rights reserved.
 ;
 ; This file is part of NoirVisor VT Core written in assembly language.
 ;
@@ -17,60 +17,18 @@ endif
 
 .code
 
+include noirhv.inc
+
 extern nvc_vt_subvert_processor_i:proc
 extern nvc_vt_exit_handler:proc
 
 ifdef _amd64
 
-; Macro for pushing all GPRs to stack.
-pushaq macro
-	
-	sub rsp,80h
-	mov qword ptr [rsp+00h],rax
-	mov qword ptr [rsp+08h],rcx
-	mov qword ptr [rsp+10h],rdx
-	mov qword ptr [rsp+18h],rbx
-	mov qword ptr [rsp+28h],rbp
-	mov qword ptr [rsp+30h],rsi
-	mov qword ptr [rsp+38h],rdi
-	mov qword ptr [rsp+40h],r8
-	mov qword ptr [rsp+48h],r9
-	mov qword ptr [rsp+50h],r10
-	mov qword ptr [rsp+58h],r11
-	mov qword ptr [rsp+60h],r12
-	mov qword ptr [rsp+68h],r13
-	mov qword ptr [rsp+70h],r14
-	mov qword ptr [rsp+78h],r15
-	
-endm
-
-; Macro for poping all GPRs from stack.
-popaq macro
-
-	mov rax,qword ptr [rsp]
-	mov rcx,qword ptr [rsp+8]
-	mov rdx,qword ptr [rsp+10h]
-	mov rbx,qword ptr [rsp+18h]
-	mov rbp,qword ptr [rsp+28h]
-	mov rsi,qword ptr [rsp+30h]
-	mov rdi,qword ptr [rsp+38h]
-	mov r8, qword ptr [rsp+40h]
-	mov r9, qword ptr [rsp+48h]
-	mov r10,qword ptr [rsp+50h]
-	mov r11,qword ptr [rsp+58h]
-	mov r12,qword ptr [rsp+60h]
-	mov r13,qword ptr [rsp+68h]
-	mov r14,qword ptr [rsp+70h]
-	mov r15,qword ptr [rsp+78h]
-	add rsp,80h
-
-endm
-
 ;Implement VMX instructions
 
 noir_vt_invept proc
 
-	invept xmmword ptr [rdx],rcx
+	invept rcx,xmmword ptr [rdx]
 	setc al
 	setz cl
 	adc al,cl
@@ -80,7 +38,7 @@ noir_vt_invept endp
 
 noir_vt_invvpid proc
 
-	invvpid xmmword ptr [rdx],rcx
+	invvpid rcx,xmmword ptr [rdx]
 	setc al
 	setz cl
 	adc al,cl
@@ -115,12 +73,25 @@ nvc_vt_resume_without_entry endp
 
 nvc_vt_exit_handler_a proc
 
+	; pushax
 	pushaq
+	; Counter Time-Profiling
+	rdtsc
+	shl rdx,32
+	or rax,rdx
+	mov rdx,rax	; Current TSC to the second parameter.
+	; Load the Guest GPR State to the first parameter.
 	mov rcx,rsp
+	; Load vcpu to third parameter.
+	mov r8,qword ptr [rsp+80h]
 	sub rsp,20h
 	call nvc_vt_exit_handler
 	add rsp,20h
+	; The rest of exit handler is not counted by time-
+	; profiler counter. It should be speculated and
+	; fine-tuned in constant "noir_vt_tsc_asm_offset"
 	popaq
+	; popax
 	vmresume
 
 nvc_vt_exit_handler_a endp
@@ -128,6 +99,7 @@ nvc_vt_exit_handler_a endp
 nvc_vt_subvert_processor_a proc
 
 	pushfq
+	xor rax,rax		; Make sure it would return zero if vmlaunch succeeds.
 	pushaq
 	mov r8,rsp
 	mov r9,vt_launched
@@ -150,6 +122,42 @@ vt_launched:
 nvc_vt_subvert_processor_a endp
 
 else
+
+noir_vt_invept proc inv_type:dword,descriptor:dword
+
+	mov ecx,dword ptr [inv_type]
+	mov edx,dword ptr [descriptor]
+	invept xmmword ptr [edx],ecx
+	setc al
+	setz cl
+	adc al,cl
+	ret
+
+noir_vt_invept endp
+
+noir_vt_invvpid proc inv_type:dword,descriptor:dword
+
+	mov ecx,dword ptr [inv_type]
+	mov edx,dword ptr [descriptor]
+	invvpid xmmword ptr [edx],ecx
+	setc al
+	setz cl
+	adc al,cl
+	ret
+
+noir_vt_invvpid endp
+
+noir_vt_vmcall proc index:dword,context:dword
+
+	mov ecx,dword ptr [index]
+	mov edx,dword ptr [context]
+	vmcall
+	setc al
+	setz cl
+	adc al,cl
+	ret
+
+noir_vt_vmcall endp
 
 noir_vt_vmxon proc vmxon_region:dword
 
@@ -216,12 +224,12 @@ noir_vt_vmread64 proc field:dword,value:dword
 
 noir_vt_vmread64 endp
 
-noir_vt_vmwrite64 proc field:dword,value:dword
+noir_vt_vmwrite64 proc field:dword,val_lo:dword,val_hi:dword
 
 	mov ecx,dword ptr[field]
-	vmwrite ecx,dword ptr[value]
+	vmwrite ecx,dword ptr[val_lo]
 	inc ecx
-	vmwrite ecx,dword ptr[value+4]
+	vmwrite ecx,dword ptr[val_hi]
 	setc al
 	setz cl
 	adc al,cl

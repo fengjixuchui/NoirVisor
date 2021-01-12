@@ -1,7 +1,7 @@
 /*
   NoirVisor - A cross-platform designed HyperVisor
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file defines constants and basic structures for Intel VT-x.
 
@@ -179,7 +179,9 @@ typedef union _ia32_vmx_exit_controls
 		u32 clear_ia32_bound_cfg:1;				// bit	23
 		u32 conceal_vmexit_from_pt:1;			// bit	24
 		u32 clear_ia23_rtit_ctrl:1;				// bit	25
-		u32 reserved5:6;						// bits	26-31
+		u32 reserved5:2;						// bits	26-27
+		u32 load_cet_state:1;					// bit	28
+		u32 reserved6:3;						// bits	29-31
 	};
 	u32 value;
 }ia32_vmx_exit_controls,*ia32_vmx_exit_controls_p;
@@ -211,7 +213,9 @@ typedef union _ia32_vmx_entry_controls
 		u32 load_ia32_bound_cfg:1;			// bit	16
 		u32 conceal_vmentry_from_pt:1;		// bit	17
 		u32 load_ia32_rtit_ctrl:1;			// bit	18
-		u32 reserved3:13;					// bit	19-31
+		u32 reserved3:1;					// bit	19
+		u32 load_cet_state:1;				// bit	20
+		u32 reserved4:11;					// bits	21-31
 	};
 	u32 value;
 }ia32_vmx_entry_controls,*ia32_vmx_entry_controls_p;
@@ -299,12 +303,48 @@ typedef union _vmx_segment_access_right
 	u32 value;
 }vmx_segment_access_right,*vmx_segment_access_right_p;
 
-typedef struct ia32_vmx_msr_auto
+typedef struct _ia32_vmx_msr_auto
 {
 	u32 index;
 	u32 reserved;
 	u64 data;
 }ia32_vmx_msr_auto,*ia32_vmx_msr_auto_p;
+
+typedef union _ia32_vmx_interruptibility_state
+{
+	struct
+	{
+		u32 blocking_by_sti:1;			// Bit	0
+		u32 blocking_by_mov_ss:1;		// Bit	1
+		u32 blocking_by_smi:1;			// Bit	2
+		u32 blocking_by_nmi:1;			// Bit	3
+		u32 enclave_interruption:1;		// Bit	4
+		u32 reserved:27;				// Bits	5-31
+	};
+	u32 value;
+}ia32_vmx_interruptibility_state,*ia32_vmx_interruptibility_state_p;
+
+typedef union _ia32_vmx_pending_debug_exceptions
+{
+	struct
+	{
+		ulong_ptr b0:1;				// Bit	0
+		ulong_ptr b1:1;				// Bit	1
+		ulong_ptr b2:1;				// Bit	2
+		ulong_ptr b3:1;				// Bit	3
+		ulong_ptr reserved1:8;		// Bits	4-11
+		ulong_ptr enabled_bp:1;		// Bit	12
+		ulong_ptr reserved2:1;		// Bit	13
+		ulong_ptr bs:1;				// Bit	14
+		ulong_ptr reserved3:1;		// Bit	15
+		ulong_ptr rtm:1;			// Bit	16
+		ulong_ptr reserved4:15;		// Bits	17-31
+#if defined(_amd64)
+		u64 reserved5:32;			// Bits 32-63
+#endif
+	};
+	ulong_ptr value;
+}ia32_vmx_pending_debug_exceptions,*ia32_vmx_pending_debug_exceptions_p;
 
 typedef enum _ia32_vmx_instruction_error
 {
@@ -335,45 +375,45 @@ typedef enum _ia32_vmx_instruction_error
 	invept_invvpid_invalid_operand=28
 }ia32_vmx_instruction_error,*ia32_vmx_instruction_error_p;
 
-#if defined(_vt_drv)
+#if defined(_vt_main)
 char* vt_error_message[0x20]=
 {
-	"Invalid Error, Number=0!",										//Error=0
-	"vmcall is executed in VMX Root Operation!",					//Error=1
-	"vmclear is given invalid physical address as operand!",		//Error=2
-	"vmclear is given vmxon region as operand!",					//Error=3
-	"vmlaunch is given non-clear vmcs as operand!",					//Error=4
-	"vmresume is given non-launched vmcs as operand!",				//Error=5
-	"vmresume is executed after vmxoff!",							//Error=6
-	"VM-Entry failed due to invalid control fields!",				//Error=7
-	"VM-Entry failed due to invalid host state!",					//Error=8
-	"vmptrld is given invalid physical address as operand!",		//Error=9
-	"vmptrld is given vmxon region as operand!",					//Error=10
-	"vmptrld is given vmcs with incorrect revision id!",			//Error=11
-	"vmread/vmwrite is given unsupported field as operand!",		//Error=12
-	"vmwrite is given read-only field as operand!",					//Error=13
-	"Invalid Error, Number=14!",									//Error=14
-	"vmxon is executed in VMX Root Operation!",						//Error=15
-	"VM-Entry failed due to invalid executive-vmcs!",				//Error=16
-	"VM-Entry failed due to non-launched executive-vmcs!",			//Error=17
-	//Error=18
+	"Invalid Error, Number=0!",										// Error=0
+	"vmcall is executed in VMX Root Operation!",					// Error=1
+	"vmclear is given invalid physical address as operand!",		// Error=2
+	"vmclear is given vmxon region as operand!",					// Error=3
+	"vmlaunch is given non-clear vmcs as operand!",					// Error=4
+	"vmresume is given non-launched vmcs as operand!",				// Error=5
+	"vmresume is executed after vmxoff!",							// Error=6
+	"VM-Entry failed due to invalid control fields!",				// Error=7
+	"VM-Entry failed due to invalid host state!",					// Error=8
+	"vmptrld is given invalid physical address as operand!",		// Error=9
+	"vmptrld is given vmxon region as operand!",					// Error=10
+	"vmptrld is given vmcs with incorrect revision id!",			// Error=11
+	"vmread/vmwrite is given unsupported field as operand!",		// Error=12
+	"vmwrite is given read-only field as operand!",					// Error=13
+	"Invalid Error, Number=14!",									// Error=14
+	"vmxon is executed in VMX Root Operation!",						// Error=15
+	"VM-Entry failed due to invalid executive-vmcs!",				// Error=16
+	"VM-Entry failed due to non-launched executive-vmcs!",			// Error=17
+	// Error=18
 	"VM-Entry failed due to executive-vmcs not vmxon region! (Are you attempting to deactivate dual-monitor treatment?)",
-	//Error=19
+	// Error=19
 	"VM-Entry failed due to non-clear vmcs! (Are you attempting to deactivate dual-monitor treatment?)",
-	"vmcall is given invalid vmexit control fields!",				//Error=20
-	"Invalid Error, Number=21!",									//Error=21
-	//Error=22
+	"vmcall is given invalid vmexit control fields!",				// Error=20
+	"Invalid Error, Number=21!",									// Error=21
+	// Error=22
 	"vmcall is given incorrect mseg revision id! (Are you attempting to deactivate dual-monitor treatment?)",
-	"vmxoff is executed under dual-monitor treatment!",				//Error=23
-	//Error=24
+	"vmxoff is executed under dual-monitor treatment!",				// Error=23
+	// Error=24
 	"vmcall is given invalid SMM-Monitor features! (Are you attempting to activate dual-monitor treatment?)",
-	//Error=25
+	// Error=25
 	"VM-Entry failed due to invalid VM-Execution Control! (Are attempting to return from SMM?)",
-	"VM-Entry failed due to events blocked by mov ss!",				//Error=26,
-	"Invalid Error, Number=27!"										//Error=27
-	"Invalid Operand to invept/invvpid Instructions!",				//Error=28
-	"Invalid Error, Number=29!",									//Error=29
-	"Invalid Error, Number=30!",									//Error=30
-	"Invalid Error, Number=31!"										//Error=31
+	"VM-Entry failed due to events blocked by mov ss!",				// Error=26,
+	"Invalid Error, Number=27!"										// Error=27
+	"Invalid Operand to invept/invvpid Instructions!",				// Error=28
+	"Invalid Error, Number=29!",									// Error=29
+	"Invalid Error, Number=30!",									// Error=30
+	"Invalid Error, Number=31!"										// Error=31
 };
 #endif

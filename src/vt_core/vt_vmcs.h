@@ -1,7 +1,7 @@
 /*
   NoirVisor - A cross-platform designed HyperVisor
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file defines encodings of VMCS.
 
@@ -69,6 +69,7 @@ typedef enum _vmx_vmcs_encoding
 	encls_exiting_bitmap=0x202E,
 	sub_page_permission_table=0x2030,
 	tsc_multiplier=0x2032,
+	enclv_exiting_bitmap=0x2036,
 	// 64-Bit Read-Only Fields
 	guest_physical_address=0x2400,
 	// 64-Bit Guest-State Fields
@@ -83,10 +84,12 @@ typedef enum _vmx_vmcs_encoding
 	guest_pdpte3=0x2810,
 	guest_msr_ia32_bound_config=0x2812,
 	guest_msr_ia32_rtit_ctrl=0x2814,
+	guest_msr_ia32_pkrs=0x2818,
 	// 64-Bit Host State Fields
 	host_msr_ia32_pat=0x2C00,
 	host_msr_ia32_efer=0x2C02,
 	host_msr_ia32_perf_global_ctrl=0x2C04,
+	host_msr_ia32_pkrs=0x2C06,
 	// 32-Bit Control Fields
 	pin_based_vm_execution_controls=0x4000,
 	primary_processor_based_vm_execution_controls=0x4002,
@@ -178,6 +181,9 @@ typedef enum _vmx_vmcs_encoding
 	guest_pending_debug_exceptions=0x6822,
 	guest_msr_ia32_sysenter_esp=0x6824,
 	guest_msr_ia32_sysenter_eip=0x6826,
+	guest_s_cet=0x6828,
+	guest_ssp=0x682A,
+	guest_msr_ia32_interrupt_ssp_table_addr=0x682C,
 	// Natural-Width Host-State Fields
 	host_cr0=0x6C00,
 	host_cr3=0x6C02,
@@ -190,7 +196,10 @@ typedef enum _vmx_vmcs_encoding
 	host_msr_ia32_sysenter_esp=0x6C10,
 	host_msr_ia32_sysenter_eip=0x6C12,
 	host_rsp=0x6C14,
-	host_rip=0x6C16
+	host_rip=0x6C16,
+	host_s_cet=0x6C18,
+	host_ssp=0x6C1A,
+	host_msr_ia32_interrupt_ssp_table_addr=0x6C1C
 }vmx_vmcs_encoding,*vmx_vmcs_encoding_p;
 
 /*

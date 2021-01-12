@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the NoirVisor's System Function assets of XPF-Core.
   Facilities are implemented in this file, including:
@@ -21,8 +21,10 @@
 #include <windef.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <ntstrsafe.h>
 #include "nvsys.h"
 
+// Synchronous Debug-Printer
 void __cdecl NoirDebugPrint(const char* Format,...)
 {
 	va_list arg_list;
@@ -33,17 +35,37 @@ void __cdecl NoirDebugPrint(const char* Format,...)
 
 void __cdecl nvci_tracef(const char* format,...)
 {
+	LARGE_INTEGER SystemTime,LocalTime;
+	TIME_FIELDS Time;
+	char Buffer[512];
+	PSTR LogBuffer;
+	SIZE_T LogSize;
 	va_list arg_list;
 	va_start(arg_list,format);
-	vDbgPrintExWithPrefix("[NoirVisor - CI Log] ",DPFLTR_IHVDRIVER_ID,DPFLTR_TRACE_LEVEL,format,arg_list);
+	KeQuerySystemTime(&SystemTime);
+	ExSystemTimeToLocalTime(&SystemTime,&LocalTime);
+	RtlTimeToTimeFields(&LocalTime,&Time);
+	RtlStringCbPrintfExA(Buffer,sizeof(Buffer),&LogBuffer,&LogSize,STRSAFE_FILL_BEHIND_NULL,"[NoirVisor - CI Log]\t| %04d-%02d-%02d %02d:%02d:%02d.%03d | ",Time.Year,Time.Month,Time.Day,Time.Hour,Time.Minute,Time.Second,Time.Milliseconds);
+	RtlStringCbVPrintfA(LogBuffer,LogSize,format,arg_list);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID,DPFLTR_TRACE_LEVEL,Buffer);
 	va_end(arg_list);
 }
 
 void __cdecl nvci_panicf(const char* format,...)
 {
+	LARGE_INTEGER SystemTime,LocalTime;
+	TIME_FIELDS Time;
+	char Buffer[512];
+	PSTR LogBuffer;
+	SIZE_T LogSize;
 	va_list arg_list;
 	va_start(arg_list,format);
-	vDbgPrintExWithPrefix("[NoirVisor - CI Panic] ",DPFLTR_IHVDRIVER_ID,DPFLTR_ERROR_LEVEL,format,arg_list);
+	KeQuerySystemTime(&SystemTime);
+	ExSystemTimeToLocalTime(&SystemTime,&LocalTime);
+	RtlTimeToTimeFields(&LocalTime,&Time);
+	RtlStringCbPrintfExA(Buffer,sizeof(Buffer),&LogBuffer,&LogSize,STRSAFE_FILL_BEHIND_NULL,"[NoirVisor - CI Panic]\t| %04d-%02d-%02d %02d:%02d:%02d.%03d | ",Time.Year,Time.Month,Time.Day,Time.Hour,Time.Minute,Time.Second,Time.Milliseconds);
+	RtlStringCbVPrintfA(LogBuffer,LogSize,format,arg_list);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID,DPFLTR_ERROR_LEVEL,Buffer);
 	va_end(arg_list);
 }
 
@@ -68,6 +90,127 @@ void __cdecl nv_panicf(const char* format,...)
 	va_list arg_list;
 	va_start(arg_list,format);
 	vDbgPrintExWithPrefix("[NoirVisor - Panic] ",DPFLTR_IHVDRIVER_ID,DPFLTR_ERROR_LEVEL,format,arg_list);
+	va_end(arg_list);
+}
+
+// Asynchronous Debug-Printer
+// For Hypervisor
+PVOID NoirAllocateLoggerBuffer(IN ULONG Size)
+{
+	PVOID p=ExAllocatePoolWithTag(NonPagedPool,Size,'gLvN');
+	if(p)RtlZeroMemory(p,Size);
+	return p;
+}
+
+void NoirFreeLoggerBuffer(IN PVOID Buffer)
+{
+	ExFreePoolWithTag(Buffer,'gLvN');
+}
+
+void NoirAsyncDebugLogThreadWorker(IN PVOID StartContext)
+{
+	PSTR Level[4]={"Error","Warning","Trace","Info"};
+	PNOIR_ASYNC_DEBUG_LOG_MONITOR LogMonitor=(PNOIR_ASYNC_DEBUG_LOG_MONITOR)StartContext;
+	LARGE_INTEGER Delay;
+	Delay.QuadPart=NOIR_DEBUG_PRINT_DELAY*(-10000);
+	KeSetSystemAffinityThread(1i64<<LogMonitor->ProcessorNumber);
+	while(InterlockedCompareExchange(&LogMonitor->Signal,1,1)==0)
+	{
+		ULONG i=0;
+		while(i<LogMonitor->RecordCount)
+		{
+			UCHAR Log[512];
+			LARGE_INTEGER Time;
+			TIME_FIELDS TimeFields;
+			ExSystemTimeToLocalTime(&LogMonitor->LogInfo[i].LogTime,&Time);
+			RtlTimeToTimeFields(&Time,&TimeFields);
+			RtlStringCchPrintfA(Log,sizeof(Log),"[NoirVisor Async Log %s - Core %d]\t|%04d-%02d-%02d %02d:%02d:%02d.%03d| %s",
+				Level[LogMonitor->LogInfo[i].Level],LogMonitor->ProcessorNumber,
+				TimeFields.Year,TimeFields.Month,TimeFields.Day,
+				TimeFields.Hour,TimeFields.Minute,TimeFields.Second,
+				TimeFields.Milliseconds,LogMonitor->LogInfo[i].LogInfo);
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID,LogMonitor->LogInfo[i].Level,Log);
+			if(++i==NOIR_DEBUG_LOG_RECORD_LIMIT)break;
+		}
+		if(LogMonitor->RecordCount>=NOIR_DEBUG_LOG_RECORD_LIMIT)
+		{
+			ULONG DroppedCount=LogMonitor->RecordCount-NOIR_DEBUG_LOG_RECORD_LIMIT-1;
+			nv_panicf("[Core %d] There are %d debug log record dropped!\n",LogMonitor->ProcessorNumber,DroppedCount);
+		}
+		RtlZeroMemory(LogMonitor->LogInfo,sizeof(NOIR_DEBUG_LOG_RECORD)*NOIR_DEBUG_LOG_RECORD_LIMIT);
+		LogMonitor->RecordCount=0;
+		KeDelayExecutionThread(KernelMode,TRUE,&Delay);
+	}
+	KeRevertToUserAffinityThread();
+	PsTerminateSystemThread(STATUS_SUCCESS);
+}
+
+void NoirFinalizeAsyncDebugPrinter()
+{
+	if(NoirAsyncDebugLogger)
+	{
+		ULONG i=0;
+		PNOIR_ASYNC_DEBUG_LOG_MONITOR LogMon=NoirAsyncDebugLogger->LogMonitor;
+		for(;i<NoirAsyncDebugLogger->NumberOfProcessors;LogMon=&NoirAsyncDebugLogger->LogMonitor[++i])
+		{
+			InterlockedIncrement(&LogMon->Signal);	// Signal the monitor thread.
+			ZwAlertThread(LogMon->ThreadHandle);	// Alerting the thread will automatically flush the log.
+			// Join the thread.
+			ZwWaitForSingleObject(LogMon->ThreadHandle,FALSE,NULL);
+			ZwClose(LogMon->ThreadHandle);
+			// Free log info.
+			NoirFreeLoggerBuffer(LogMon->LogInfo);
+		}
+		NoirFreeLoggerBuffer(NoirAsyncDebugLogger);
+	}
+}
+
+NTSTATUS NoirInitializeAsyncDebugPrinter(IN BOOLEAN EnableFileLogging)
+{
+	NTSTATUS st=STATUS_INSUFFICIENT_RESOURCES;
+	KAFFINITY af;
+	ULONG Count=KeQueryActiveProcessorCount(&af);
+	NoirAsyncDebugLogger=NoirAllocateLoggerBuffer(Count*sizeof(NOIR_ASYNC_DEBUG_LOG_MONITOR)+sizeof(NOIR_ASYNC_DEBUG_LOG_SYSTEM));
+	if(NoirAsyncDebugLogger)
+	{
+		OBJECT_ATTRIBUTES oa;
+		ULONG i=0;
+		PNOIR_ASYNC_DEBUG_LOG_MONITOR LogMon=NoirAsyncDebugLogger->LogMonitor;
+		InitializeObjectAttributes(&oa,NULL,OBJ_KERNEL_HANDLE,NULL,NULL);
+		NoirAsyncDebugLogger->NumberOfProcessors=Count;
+		NoirAsyncDebugLogger->LogLimit=NOIR_DEBUG_LOG_RECORD_LIMIT;		// Number of logs within 100 milliseconds.
+		for(;i<Count;LogMon=&NoirAsyncDebugLogger->LogMonitor[++i])
+		{
+			LogMon->ProcessorNumber=i;
+			st=STATUS_INSUFFICIENT_RESOURCES;
+			LogMon->LogInfo=NoirAllocateLoggerBuffer(sizeof(NOIR_DEBUG_LOG_RECORD)*NOIR_DEBUG_LOG_RECORD_LIMIT);
+			if(LogMon)st=PsCreateSystemThread(&LogMon->ThreadHandle,SYNCHRONIZE,&oa,NULL,NULL,NoirAsyncDebugLogThreadWorker,LogMon);
+			if(NT_ERROR(st))
+			{
+				NoirFinalizeAsyncDebugPrinter();
+				break;
+			}
+		}
+	}
+	NoirDebugPrint("Async Debug Printer Initialization Status: 0x%X\n",st);
+	return st;
+}
+
+void __cdecl NoirAsyncDebugVPrint(ULONG FilterLevel,const char* Format,va_list ArgList)
+{
+	ULONG PN=KeGetCurrentProcessorNumber();
+	PNOIR_ASYNC_DEBUG_LOG_MONITOR LogMon=&NoirAsyncDebugLogger->LogMonitor[PN];
+	ULONG Index=++LogMon->RecordCount;
+	KeQuerySystemTime(&LogMon->LogInfo[Index].LogTime);
+	LogMon->LogInfo[Index].Level=FilterLevel;
+	RtlStringCchVPrintfA(LogMon->LogInfo[Index].LogInfo,500,Format,ArgList);
+}
+
+void __cdecl nv_async_dprintf(const char* format,...)
+{
+	va_list arg_list;
+	va_start(arg_list,format);
+	NoirAsyncDebugVPrint(DPFLTR_INFO_LEVEL,format,arg_list);
 	va_end(arg_list);
 }
 
@@ -99,9 +242,8 @@ void noir_generic_call(noir_broadcast_worker worker,void* context)
 	{
 		PLONG32 volatile GlobalOperatingNumber=(PULONG32)((ULONG_PTR)IpbBuffer+Num*sizeof(KDPC));
 		PKDPC pDpc=(PKDPC)IpbBuffer;
-		ULONG i=0;
 		*GlobalOperatingNumber=Num;
-		for(;i<Num;i++)
+		for(ULONG i=0;i<Num;i++)
 		{
 			KeInitializeDpc(&pDpc[i],NoirDpcRT,context);
 			KeSetTargetProcessorDpc(&pDpc[i],(BYTE)i);
@@ -117,40 +259,130 @@ void noir_generic_call(noir_broadcast_worker worker,void* context)
 
 ULONG32 noir_get_instruction_length(IN PVOID code,IN BOOLEAN LongMode)
 {
-	ULONG arch=LongMode?64:0;
-	return LDE(code,arch);
+	if(LongMode)
+		return NoirGetInstructionLength64(code,0);
+	return NoirGetInstructionLength32(code,0);
+}
+
+void NoirReportMemoryIntrospectionCounter()
+{
+	NoirDebugPrint("============NoirVisor Memory Introspection Report Start============\n");
+	NoirDebugPrint("Unreleased NonPaged Pools: %d\n",NoirAllocatedNonPagedPools);
+	NoirDebugPrint("Unreleased Paged Pools: %d\n",NoirAllocatedPagedPools);
+	NoirDebugPrint("Unreleased Contiguous Memory Couunt: %d\n",NoirAllocatedContiguousMemoryCount);
+	if(NoirAllocatedNonPagedPools || NoirAllocatedPagedPools || NoirAllocatedContiguousMemoryCount)
+		NoirDebugPrint("Memory Leak is detected!\n");
+	else
+		NoirDebugPrint("No Memory Leaks...\n");
+	NoirDebugPrint("=============NoirVisor Memory Introspection Report End=============\n");
+}
+
+PVOID NoirAllocateContiguousMemory(IN SIZE_T Length)
+{
+	PHYSICAL_ADDRESS H={0xFFFFFFFFFFFFFFFF};
+	PVOID p=MmAllocateContiguousMemory(Length,H);
+	if(p)
+	{
+		RtlZeroMemory(p,Length);
+		InterlockedIncrement(&NoirAllocatedContiguousMemoryCount);
+	}
+	return p;
+}
+
+PVOID NoirAllocateNonPagedMemory(IN SIZE_T Length)
+{
+	PVOID p=ExAllocatePoolWithTag(NonPagedPool,Length,'pNvN');
+	if(p)
+	{
+		RtlZeroMemory(p,Length);
+		InterlockedIncrement(&NoirAllocatedNonPagedPools);
+	}
+	return p;
+}
+
+PVOID NoirAllocatePagedMemory(IN SIZE_T Length)
+{
+	PVOID p=ExAllocatePoolWithTag(PagedPool,Length,'gPvN');
+	if(p)
+	{
+		RtlZeroMemory(p,Length);
+		InterlockedIncrement(&NoirAllocatedPagedPools);
+	}
+	return p;
+}
+
+void NoirFreeContiguousMemory(PVOID VirtualAddress)
+{
+#if defined(_WINNT5)
+	// It is recommended to release contiguous memory at APC level on NT5.
+	KIRQL f_oldirql;
+	KeRaiseIrql(APC_LEVEL,&f_oldirql);
+#endif
+	MmFreeContiguousMemory(VirtualAddress);
+	InterlockedDecrement(&NoirAllocatedContiguousMemoryCount);
+#if defined(_WINNT5)
+	KeLowerIrql(f_oldirql);
+#endif
+}
+
+void NoirFreeNonPagedMemory(void* VirtualAddress)
+{
+	ExFreePoolWithTag(VirtualAddress,'pNvN');
+	InterlockedDecrement(&NoirAllocatedNonPagedPools);
+}
+
+void NoirFreePagedMemory(void* virtual_address)
+{
+	ExFreePoolWithTag(virtual_address,'gPvN');
+	InterlockedDecrement(&NoirAllocatedPagedPools);
 }
 
 void* noir_alloc_contd_memory(size_t length)
 {
-	PHYSICAL_ADDRESS M={0xFFFFFFFFFFFFFFFF};
-	PVOID p=MmAllocateContiguousMemory(length,M);
-	if(p)RtlZeroMemory(p,length);
+	// PHYSICAL_ADDRESS L={0};
+	PHYSICAL_ADDRESS H={0xFFFFFFFFFFFFFFFF};
+	// PHYSICAL_ADDRESS B={0};
+	// PVOID p=MmAllocateContiguousMemorySpecifyCacheNode(length,L,H,B,MmCached,MM_ANY_NODE_OK);
+	PVOID p=MmAllocateContiguousMemory(length,H);
+	if(p)
+	{
+		RtlZeroMemory(p,length);
+		InterlockedIncrement(&NoirAllocatedContiguousMemoryCount);
+	}
 	return p;
 }
 
 void* noir_alloc_nonpg_memory(size_t length)
 {
 	PVOID p=ExAllocatePoolWithTag(NonPagedPool,length,'pNvN');
-	if(p)RtlZeroMemory(p,length);
+	if(p)
+	{
+		RtlZeroMemory(p,length);
+		InterlockedIncrement(&NoirAllocatedNonPagedPools);
+	}
 	return p;
 }
 
 void* noir_alloc_paged_memory(size_t length)
 {
 	PVOID p=ExAllocatePoolWithTag(PagedPool,length,'gPvN');
-	if(p)RtlZeroMemory(p,length);
+	if(p)
+	{
+		RtlZeroMemory(p,length);
+		InterlockedIncrement(&NoirAllocatedPagedPools);
+	}
 	return p;
 }
 
 void noir_free_contd_memory(void* virtual_address)
 {
 #if defined(_WINNT5)
-	//It is recommended to release contiguous memory at APC level on NT5.
+	// It is recommended to release contiguous memory at APC level on NT5.
 	KIRQL f_oldirql;
 	KeRaiseIrql(APC_LEVEL,&f_oldirql);
 #endif
 	MmFreeContiguousMemory(virtual_address);
+	InterlockedDecrement(&NoirAllocatedContiguousMemoryCount);
 #if defined(_WINNT5)
 	KeLowerIrql(f_oldirql);
 #endif
@@ -159,11 +391,13 @@ void noir_free_contd_memory(void* virtual_address)
 void noir_free_nonpg_memory(void* virtual_address)
 {
 	ExFreePoolWithTag(virtual_address,'pNvN');
+	InterlockedDecrement(&NoirAllocatedNonPagedPools);
 }
 
 void noir_free_paged_memory(void* virtual_address)
 {
 	ExFreePoolWithTag(virtual_address,'gPvN');
+	InterlockedDecrement(&NoirAllocatedPagedPools);
 }
 
 ULONG64 noir_get_physical_address(void* virtual_address)
@@ -173,7 +407,7 @@ ULONG64 noir_get_physical_address(void* virtual_address)
 	return pa.QuadPart;
 }
 
-//We need to map physical memory in nesting virtualization.
+// We need to map physical memory in nesting virtualization.
 void* noir_map_physical_memory(ULONG64 physical_address,size_t length)
 {
 	PHYSICAL_ADDRESS pa;
@@ -222,17 +456,11 @@ void noir_free_2mb_page(void* virtual_address)
 	MmFreeContiguousMemorySpecifyCache(virtual_address,0x200000,MmCached);
 }
 
-//Some Additional repetitive functions
+// Some Additional repetitive functions
 ULONG64 NoirGetPhysicalAddress(IN PVOID VirtualAddress)
 {
 	PHYSICAL_ADDRESS pa=MmGetPhysicalAddress(VirtualAddress);
 	return pa.QuadPart;
-}
-
-PVOID NoirAllocateContiguousMemory(IN ULONG Length)
-{
-	PHYSICAL_ADDRESS MaxAddr={0xFFFFFFFFFFFFFFFF};
-	return MmAllocateContiguousMemory(Length,MaxAddr);
 }
 
 // Essential Multi-Threading Facility.

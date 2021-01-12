@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the central HyperVisor of NoirVisor.
 
@@ -46,6 +46,7 @@
 
 // Stack Size = 64KB
 #define nvc_stack_size			0x10000
+#define nvc_stack_pages			0x10
 
 typedef struct _noir_hypervisor
 {
@@ -64,6 +65,18 @@ typedef struct _noir_hypervisor
 		ulong_ptr base;
 		u32 size;
 	}hv_image;
+	union
+	{
+		struct
+		{
+			u64 stealth_msr_hook:1;
+			u64 stealth_inline_hook:1;
+			u64 cpuid_hv_presence:1;
+			u64 disable_patchguard:1;
+			u64 reserved:60;
+		};
+		u64 value;
+	}options;		// Enable certain features.
 	u32 cpu_count;
 	char vendor_string[13];
 	u8 cpu_manuf;
@@ -107,7 +120,15 @@ extern noir_hypervisor_p hvm_p;
 extern ulong_ptr system_cr3;
 extern ulong_ptr orig_system_call;
 #endif
-void noir_system_call();
+// Functions from MSHV Core.
+u32 fastcall nvc_mshv_build_cpuid_handlers();
+void fastcall nvc_mshv_teardown_cpuid_handlers();
+u64 fastcall nvc_mshv_rdmsr_handler(u32 index);
+void fastcall nvc_mshv_wrmsr_handler(u32 index,u64 val);
+
+// Miscellaneous
+u64 noir_query_enabled_features_in_system();
+void noir_system_call(void);
 
 #if defined(_central_hvm)
 #define known_vendor_strings	16
@@ -151,4 +172,30 @@ u8 cpu_manuf_list[known_vendor_strings]=
 	via_processor,
 	vortex_processor
 };
+#endif
+
+typedef void (fastcall *noir_mshv_cpuid_handler)
+(
+ noir_cpuid_general_info_p param
+);
+
+typedef u64 (fastcall *noir_mshv_msr_handler)
+(
+ bool write,
+ u64 val
+);
+
+// Handlers of MSHV-Core
+#if defined(_mshv_cpuid)
+noir_mshv_cpuid_handler*	hvm_cpuid_handlers=null;
+noir_mshv_msr_handler*		hvm_msr_handlers=null;
+#else
+extern noir_mshv_cpuid_handler*	hvm_cpuid_handlers;
+extern noir_mshv_msr_handler*	hvm_msr_handlers;
+#endif
+
+// Globle Variables for MSHV-Core
+#if defined(_mshv_msr)
+u64v noir_mshv_guest_os_id=0;
+u64v noir_mshv_hypercall_ctrl=0;
 #endif

@@ -1,7 +1,7 @@
 /*
   NoirVisor - Hardware-Accelerated Hypervisor solution
 
-  Copyright 2018-2020, Zero Tang. All rights reserved.
+  Copyright 2018-2021, Zero Tang. All rights reserved.
 
   This file is the exit handler of Intel VT-x.
 
@@ -102,11 +102,11 @@ typedef union _ia32_vmentry_interruption_information_field
 {
 	struct
 	{
-		u32 vector:8;
-		u32 type:3;
-		u32 deliver:1;
-		u32 reserved:19;
-		u32 valid:1;
+		u32 vector:8;		// Bits	0-7
+		u32 type:3;			// Bits	8-10
+		u32 deliver:1;		// Bit	11
+		u32 reserved:19;	// Bits	12-30
+		u32 valid:1;		// Bit	31
 	};
 	u32 value;
 }ia32_vmentry_interruption_information_field,*ia32_vmentry_interruption_information_field_p;
@@ -235,13 +235,14 @@ typedef union _ia32_vmexit_instruction_information
 typedef void (fastcall *noir_vt_exit_handler_routine)
 (
  noir_gpr_state_p gpr_state,
- u32 exit_reason
+ noir_vt_vcpu_p vcpu
 );
 
 typedef void (fastcall *noir_vt_cpuid_exit_handler)
 (
- noir_gpr_state_p gpr_state,
- noir_vt_vcpu_p vcpu
+ u32 leaf,
+ u32 subleaf,
+ noir_cpuid_general_info_p info
 );
 
 #if defined(_vt_exit)
@@ -319,13 +320,34 @@ const char* vmx_exit_msg[vmx_maximum_exit_reason]=
 };
 
 noir_vt_exit_handler_routine* vt_exit_handlers=null;
-extern noir_vt_cpuid_exit_handler** vt_cpuid_handlers;
+noir_vt_cpuid_exit_handler nvcp_vt_cpuid_handler=null;
 #endif
 
 void inline noir_vt_advance_rip()
 {
-	ulong_ptr gip;
+	ulong_ptr gip,gflags;
 	u32 len;
+	// Special treatings for Single-Step scenarios.
+	u8 vst=noir_vt_vmread(guest_rflags,&gflags);
+	if(vst==0 && noir_bt(&gflags,ia32_rflags_tf))
+	{
+		// Don't inject an #DB exception since Intel has its own
+		// specific feature regarding pending debug exceptions.
+		ia32_vmx_pending_debug_exceptions pending_de;
+		ia32_vmx_interruptibility_state interruptibility;
+		// General Single-Step debug exceptions.
+		noir_vt_vmread(guest_pending_debug_exceptions,&pending_de.value);
+		pending_de.bs=true;
+		noir_vt_vmwrite(guest_pending_debug_exceptions,pending_de.value);
+		// Special Blockings onto Single-Step debug exceptions.
+		noir_vt_vmread(guest_interruptibility_state,&interruptibility.value);
+		interruptibility.blocking_by_sti=false;
+		interruptibility.blocking_by_mov_ss=false;
+		interruptibility.blocking_by_smi=false;
+		interruptibility.blocking_by_nmi=false;
+		noir_vt_vmwrite(guest_interruptibility_state,interruptibility.value);
+	}
+	// Regular stuff...
 	noir_vt_vmread(guest_rip,&gip);
 	noir_vt_vmread(vmexit_instruction_length,&len);
 	noir_vt_vmwrite(guest_rip,gip+len);
