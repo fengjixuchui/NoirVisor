@@ -11,7 +11,7 @@ echo Platform: 64-Bit Windows
 echo Preset: Debug/Checked Build
 echo Powered by zero.tangptr@gmail.com
 echo Copyright (c) 2018-2021, zero.tangptr@gmail.com. All Rights Reserved.
-pause
+if "%~1"=="/s" (echo DO-NOT-PAUSE is activated!) else (pause)
 
 echo ============Start Compiling============
 echo Compiling Windows Driver Framework...
@@ -41,6 +41,6 @@ echo ============Start Linking============
 link "%objpath%\*.obj" "%objpath%\version.res" /LIBPATH:"%libpath%\win7\km\x64" /NODEFAULTLIB "ntoskrnl.lib" "..\src\disasm\bin\compchk_win7x64\zydis.lib" /NOLOGO /DEBUG /PDB:"%objpath%\NoirVisor.pdb" /OUT:"%binpath%\NoirVisor.sys" /SUBSYSTEM:NATIVE /Driver /ENTRY:"NoirDriverEntry" /Machine:X64 /ERRORREPORT:QUEUE
 
 echo ============Start Signing============
-signtool sign /v /f .\ztnxtest.pfx /t http://timestamp.globalsign.com/scripts/timestamp.dll %binpath%\NoirVisor.sys
+signtool sign /v /f .\ztnxtest.pfx  %binpath%\NoirVisor.sys
 
-pause
+if "%~1"=="/s" (echo Completed!) else (pause)
