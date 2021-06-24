@@ -1,5 +1,5 @@
 # NoirVisor
-NoirVisor - Hardware-Accelerated Hypervisor solution with support to complex functions and purposes and nested virtualization.
+NoirVisor - The Grimoire Hypervisor solution for x86.
 
 <p align=center>
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
@@ -9,7 +9,7 @@ NoirVisor - Hardware-Accelerated Hypervisor solution with support to complex fun
 </p>
 
 # Introduction
-NoirVisor is a hardware-accelerated hypervisor (a.k.a VMM, Virtual Machine Monitor) with support to complex functions and purposes. It is designed to support processors based on x86 architecture with hardware-accelerated virtualization feature. For example, Intel processors supporting Intel VT-x or AMD processors supporting AMD-V meet the requirement. By designation, NoirVisor determines the processor manufacturer and selects the function core.
+NoirVisor is a hardware-accelerated hypervisor (a.k.a VMM, Virtual Machine Monitor) with support to complex functions and purposes. It is designed to support processors based on x86 architecture with hardware-accelerated virtualization feature. For example, Intel processors supporting Intel VT-x or AMD processors supporting AMD-V meet the requirement. By design, NoirVisor determines the processor manufacturer and selects the function core.
 
 # Processor Requirement
 Intel Processors based on Intel 64 and IA-32 Architecture, with support to Intel VT-x. Intel EPT is prefered, but not required. <br>
@@ -33,16 +33,16 @@ For Nested AMD-V Algorithm, visit [here](src/svm_core/readme.md#svm-nesting-algo
 # Announcement to all contributors
 NoirVisor is coded in the C programming language and the assembly since it is procedure-oriented designed. <br>
 Contributing Guidelines are available in repository. For details, see the markdown file in the root directory of repository. <br>
-DO NOT PROVIDE CODES WITH C++ WHICH INVOLVES THE NoirVisor Core IN YOUR PULL-REQUEST!
+**DO NOT PROVIDE CODES WITH C++ WHICH INVOLVES THE NoirVisor Core IN YOUR PULL-REQUEST!**
 
 # Build
 To build NoirVisor, using batch is essential. <br>
 Note that you should execute the `build_prep.bat` to make directories for first-time compilation. 
 
 ## Windows Driver
-To build a kernel-mode driver on Windows, you should download and mount Enterprise Windows Driver Kit 10 (version 2004) ISO file to T disk. I recommend using [WinCDEmu](https://wincdemu.sysprogs.org/download/) to mount the ISO on system startup if you are looking for a free virtual ISO Drive. <br>
+To build a kernel-mode driver on Windows, you should download and mount Enterprise Windows Driver Kit 10 (Visual Studio Build Tools 16.9.2) ISO file to T disk. I recommend using [WinCDEmu](https://wincdemu.sysprogs.org/download/) to mount the ISO on system startup if you are looking for a free virtual ISO Drive. <br>
 Then run the provided batch file to build it. You might have to mount the ISO file manually everytime on your machine startup in that I failed to find a script that mount an ISO to a specific drive letter. If you use WinCDEmu, however, you may order the system to mount EWDK10 and specify its drive letter during startup. <br>
-You may download the EWDK10-2004 (with VS Build Tools 16.7) from Microsoft: https://docs.microsoft.com/en-us/legal/windows/hardware/enterprise-wdk-license-2019 <br>
+You may download the EWDK10 (with VS Build Tools 16.9.2) from Microsoft: https://docs.microsoft.com/en-us/legal/windows/hardware/enterprise-wdk-license-2019 <br>
 Make sure you have downloaded the correct version. NoirVisor would continue updating. If not using correct version, you might fail to compile the latest version of NoirVisor. <br>
 Presets for Free/Release build are available. Please note that the compiled binary under Free build does not come along with a digital signature. You might have to sign it yourself.
 
@@ -63,15 +63,15 @@ Project NoirVisor chooses Zydis as NoirVisor's disassembler engine. You should p
 There is a .NET Framework 4.0 based GUI loader available on GitHub now: https://github.com/Zero-Tang/NoirVisorLoader <br>
 If you are using operating systems older than Windows 8, you are supposed to manually install .NET Framework 4.0 or higher. <br>
 If you use the digital signature provided in NoirVisor's repository, then you should enable the test-signing on your machine. <br>
-You may disable Stealth SSDT Hook by setting up registry: (If your system is updated with certain patches since the latter half of 2018, you should, nonetheless, disable Stealth MSR Hook feature. Otherwise, your system could result in #DF failure.)
-```Bat
-reg add "HKLM\SOFTWARE\Zero-Tang\NoirVisor" /v "StealthMsrHook" /t REG_DWORD /d 0 /f
-```
-You may disable Stealth Inline Hook by setting up registry:
+You may enable Stealth SSDT Hook by setting up registry: (If your system is updated with certain patches since 2018, you should, nonetheless, disable Stealth MSR Hook feature. Otherwise, your system could result in #DF failure.) Please note that since hooking is a very dangerous behavior, NoirVisor disables them on default.
 ```bat
-reg add "HKLM\SOFTWARE\Zero-Tang\NoirVisor" /v "StealthInlineHook" /t REG_DWORD /d 0 /f
+reg add "HKLM\SOFTWARE\Zero-Tang\NoirVisor" /v "StealthMsrHook" /t REG_DWORD /d 1 /f
 ```
-You may set the values to 1, or remove the value key, in order to re-enable the features.
+You may enable Stealth Inline Hook by setting up registry:
+```bat
+reg add "HKLM\SOFTWARE\Zero-Tang\NoirVisor" /v "StealthInlineHook" /t REG_DWORD /d 1 /f
+```
+You may set the values to 0, or remove the value key, in order to disable these features again.
 
 ## EFI Application and Runtime Driver
 Use a USB flash stick and setup with GUID Partition Table (GPT). Construct a partition and format it info FAT32 file system. After you successfully build the image, you should see two images: `bootx64.efi` and `NoirVisor.efi` <br> 
@@ -85,11 +85,14 @@ As specified in AMD64 Architecture Programming Manual, `CPUID.EAX=1.ECX[bit 31]`
 
 You may disable the detection for NoirVisor in Windows via setting up the registry. <br>
 Locate the registry key: `HKLM\Software\Zero-Tang\NoirVisor`. If this key does not exist then create it. <br>
-Edit the `CpuidPresence` Key Value to 0. If not exist then create it using following command: <br>
+Edit the `CpuidPresence` Key Value to 0. Feel free to execute the following command if you find it less taxing to do: <br>
 ```bat
 reg add "HKLM\SOFTWARE\Zero-Tang\NoirVisor" /v "CpuidPresence" /t REG_DWORD /d 0 /f
 ```
-The TSC due to VM-Exit is always omitted in Exit Handler. This feature can not be disabled. Please note that omitted TSC is approximate and thereby cannot counter precise time-profiler.
+
+## TSC-Omission
+Since the end of 2020, NoirVisor implemented a simple Time-Profiler Countermeasure. According to the half-year test, this technique is deemed unstable with multiprocessing systems. For example, TSC-omission may cause external hardwares to trigger drivers resetting themselves. Everything could be messed up: Timer, Graphics Card, NIC, etc. <br>
+By virtue of this unexpected and unpleasant side-effect, this feature is now obsolete. Codes addressing this feature are now removed.
 
 # Customizable VM
 Customizable VM is the true explanation of "complex functions and purposes". As the project creator and director, Zero's true intention to create this project is for studying Hardware-Acclerated Virtualization Technology. Therefore, any features which is related to virtualization and which Zero has ideas to implement will be added in the project. <br>
@@ -113,9 +116,8 @@ For more information, check out the [NoirVisor 2020+](https://github.com/Zero-Ta
 
 # Completed Features
 - Minimal Microsoft `Hv#1` Hypervisor Functionalities.
-- Stealth SSDT Hook (NtOpenProcess Hook) on 64-bit Windows, both Intel VT-x and AMD-V. (Incompatible with `KiErrata704Present` mitigation.)
+- Stealth SSDT Hook (NtOpenProcess Hook) on 64-bit Windows, both Intel VT-x and AMD-V. (**Incompatible** with the `KiErrata704Present` mitigation.)
 - Stealth Inline Hook (NtSetInformationFile Hook) on 64-bit Windows, both Intel VT-x/EPT and AMD-V/NPT.
-- TSC Offsetting as Countermeasure for TSC-based Time-Profiler.
 - Tagged Translation Lookaside Buffer by ASID/VPID feature.
 - Critical Hypervisor Protection.
 - Software-Level Code Integrity Enforcement.

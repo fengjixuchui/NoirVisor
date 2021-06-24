@@ -22,11 +22,40 @@
 #define ia32_feature_control			0x3A
 #define ia32_bios_updt_trig				0x79
 #define ia32_bios_sign_id				0x8B
+#define ia32_mtrr_cap					0xFE
 #define ia32_sysenter_cs				0x174
 #define ia32_sysenter_esp				0x175
 #define ia32_sysenter_eip				0x176
 #define ia32_debug_control				0x1D9
+#define ia32_mtrr_phys_base0			0x200
+#define ia32_mtrr_phys_mask0			0x201
+#define ia32_mtrr_phys_base1			0x202
+#define ia32_mtrr_phys_mask1			0x203
+#define ia32_mtrr_phys_base2			0x204
+#define ia32_mtrr_phys_mask2			0x205
+#define ia32_mtrr_phys_base3			0x206
+#define ia32_mtrr_phys_mask3			0x207
+#define ia32_mtrr_phys_base4			0x208
+#define ia32_mtrr_phys_mask4			0x209
+#define ia32_mtrr_phys_base5			0x20A
+#define ia32_mtrr_phys_mask5			0x20B
+#define ia32_mtrr_phys_base6			0x20C
+#define ia32_mtrr_phys_mask6			0x20D
+#define ia32_mtrr_phys_base7			0x20E
+#define ia32_mtrr_phys_mask7			0x20F
+#define ia32_mtrr_fix64k_00000			0x250
+#define ia32_mtrr_fix16k_80000			0x258
+#define ia32_mtrr_fix16k_a0000			0x259
+#define ia32_mtrr_fix4k_c0000			0x268
+#define ia32_mtrr_fix4k_c8000			0x269
+#define ia32_mtrr_fix4k_d0000			0x26A
+#define ia32_mtrr_fix4k_d8000			0x26B
+#define ia32_mtrr_fix4k_e0000			0x26C
+#define ia32_mtrr_fix4k_e8000			0x26D
+#define ia32_mtrr_fix4k_f0000			0x26E
+#define ia32_mtrr_fix4k_f8000			0x26F
 #define ia32_pat						0x277
+#define ia32_mtrr_def_type				0x2FF
 #define ia32_perf_global_ctrl			0x38F
 #define ia32_vmx_basic					0x480
 #define ia32_vmx_pinbased_ctrl			0x481
@@ -116,6 +145,38 @@
 #define ia32_cpuid_hv_presence		31
 #define ia32_cpuid_hv_presence_bit	0x80000000
 
+// Segment Descriptor Types
+#define ia32_segment_data_ro				0x0
+#define ia32_segment_data_ro_accessed		0x1
+#define ia32_segment_data_rw				0x2
+#define ia32_segment_data_rw_accessed		0x3
+#define ia32_segment_data_ro_xdown			0x4
+#define ia32_segment_data_ro_xdown_accessed	0x5
+#define ia32_segment_data_rw_xdown			0x6
+#define ia32_segment_data_rw_xdown_accessed	0x7
+
+#define ia32_segment_code_xo				0x8
+#define ia32_segment_code_xo_accessed		0x9
+#define ia32_segment_code_rx				0xA
+#define ia32_segment_code_rx_accessed		0xB
+#define ia32_segment_code_xo_cform			0xC
+#define ia32_segment_code_xo_cform_accessed	0xD
+#define ia32_segment_code_rx_cform			0xE
+#define ia32_segment_code_rx_cform_accessed	0xF
+
+#define ia32_segment_system_16bit_tss_avail	1
+#define ia32_segment_system_ldt				2
+#define ia32_segment_system_16bit_tss_busy	3
+#define ia32_segment_system_16bit_call_gate	4
+#define ia32_segment_system_task_gate		5
+#define ia32_segment_system_16bit_int_gate	6
+#define ia32_segment_system_16bit_trap_gate	7
+#define ia32_segment_system_32bit_tss_avail	9
+#define ia32_segment_system_32bit_tss_busy	11
+#define ia32_segment_system_32bit_call_gate	12
+#define ia32_segment_system_32bit_int_gate	14
+#define ia32_segment_system_32bit_trap_gate	15
+
 // This is used for defining IA-32 RFlags bits.
 #define ia32_rflags_cf			0
 #define ia32_rflags_pf			2
@@ -164,3 +225,24 @@ typedef union _ia32_xcr0
 	};
 	u64 value;
 }ia32_xcr0,*ia32_xcr0_p;
+
+// IA32 Feature Control MSR
+typedef union _ia32_feature_control_msr
+{
+	struct
+	{
+		u64 lock:1;						// Bit	0
+		u64 vmx_enabled_inside_smx:1;	// Bit	1
+		u64 vmx_enabled_outside_smx:1;	// Bit	2
+		u64 reserved1:5;				// Bits	3-7
+		u64 senter_local_enabled:7;		// Bits	8-14
+		u64 senter_global_enabled:1;	// Bit	15
+		u64 reserved2:1;				// Bit	16
+		u64 sgx_launch_enable:1;		// Bit	17
+		u64 sgx_global_enable:1;		// Bit	18
+		u64 reserved3:1;				// Bit	19
+		u64 lmce:1;						// Bit	20
+		u64 reserved4:43;				// Bits	21-63
+	};
+	u64 value;
+}ia32_feature_control_msr,*ia32_feature_control_msr_p;

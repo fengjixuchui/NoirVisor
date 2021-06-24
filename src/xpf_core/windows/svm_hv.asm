@@ -54,32 +54,23 @@ nvc_svm_exit_handler_a proc
 
 	; At this moment, VM-Exit occured.
 	; Save all GPRs, and pass to Exit Handler
-	; pushax
 	pushaq
-	; Counter Time-Profiling.
-	rdtsc
-	shl rdx,32
-	mov r8d,eax
-	or r8,rdx
 	; Save processor's hidden state for Guest.
 	mov rax,qword ptr[rsp+80h]
 	vmsave rax
 	; Load processor's hidden state for Host.
 	mov rax,qword ptr[rsp+88h]
 	vmload rax
-	mov rcx,rsp
+	mov rcx,rsp		; First Parameter - Guest GPRs
+	; Second Parameter - vCPU
 	mov rdx,qword ptr[rsp+90h]
 	sub rsp,20h
 	; Call Exit Handler
 	call nvc_svm_exit_handler
-	; The rest of exit handler is not counted by time-
-	; profiler counter. It should be speculated and
-	; fine-tuned in constant "noir_svm_tsc_asm_offset"
 	add rsp,20h
 	; Restore all the GPRs.
 	; Certain context should be revised by VMM.
 	popaq
-	; popax
 	; After popaq, rax stores the physical
 	; address of VMCB again.
 	vmrun rax
